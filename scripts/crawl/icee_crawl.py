@@ -29,9 +29,9 @@ os.makedirs(CSV_FOLDER, exist_ok=True)
 
 # db
 db = mysql.connector.connect(
-    host='localhost',
-    user='root',        # 🔁 사용자 설정
-    password='1234',    # 🔁 비밀번호 설정
+    host='localhost',   # or 127.0.0
+    user='root',        #계정
+    password='1234',    #비밀번호
     database='icee_crawl'
 )
 cursor = db.cursor()
