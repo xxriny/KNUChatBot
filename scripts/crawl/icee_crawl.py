@@ -36,6 +36,7 @@ db = mysql.connector.connect(
 )
 cursor = db.cursor()
 
+#날짜 파싱해야함. 포맷 다름 mysql
 def parse_date(date_str):
     if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
         return date_str

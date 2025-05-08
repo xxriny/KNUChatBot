@@ -7,7 +7,7 @@ app = Flask(__name__)
 # csv path image path
 CSV_PATH = '../../data/icee_crawl.csv'
 IMAGE_FOLDER = os.path.abspath('../../data/images')
-NGROK_BASE_URL = 'https://e088-210-110-128-79.ngrok-free.app'
+NGROK_BASE_URL = 'https://b2ae-210-110-128-79.ngrok-free.app'
 
 df = pd.read_csv(CSV_PATH)
 @app.route('/images/<path:filename>')
