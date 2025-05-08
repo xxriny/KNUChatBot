@@ -417,7 +417,9 @@ def crawl_engineering():
 # ========================================
 if __name__ == "__main__":
     crawl_mainpage()
-    
+    crawl_engineering()
+    crawl_administration()
+    crawl_library()
 
     # CSV 저장
     with open(CSV_FILE, "w", newline="", encoding="utf-8-sig") as f:
