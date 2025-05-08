@@ -25,11 +25,6 @@ session.mount("https://", adapter)
 
 all_data = []
 
-# 맨 위에 추가
-batch_size = 100  # 중간 저장 주기
-record_count = 0  # 누적 카운트
-
-
 def sanitize_filename(name):
     return "".join(c if c.isalnum() or c in (' ', '.', '_') else '_' for c in name)
 
