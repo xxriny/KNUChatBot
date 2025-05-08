@@ -11,7 +11,6 @@ import mysql.connector
 import re
 from datetime import datetime
 
-# ========== 설정 ==========
 BASE_URL = 'https://icee.kangwon.ac.kr'
 LIST_URL_TEMPLATE = BASE_URL + '/index.php?mt=page&mp=5_1&mm=oxbbs&oxid=1&cpage={}'
 SAVE_FOLDER = '../../data/images'
@@ -19,18 +18,16 @@ CSV_FOLDER = '../../data'
 CSV_FILE = os.path.join(CSV_FOLDER, 'icee_crawl.csv')
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# ========== 이미지 요청 세션 설정 ==========
 session = requests.Session()
 retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
 adapter = HTTPAdapter(max_retries=retries)
 session.mount('http://', adapter)
 session.mount('https://', adapter)
 
-# ========== 디렉토리 생성 ==========
 os.makedirs(SAVE_FOLDER, exist_ok=True)
 os.makedirs(CSV_FOLDER, exist_ok=True)
 
-# ========== MySQL 연결 ==========
+# db
 db = mysql.connector.connect(
     host='localhost',
     user='root',        # 🔁 사용자 설정
@@ -39,13 +36,11 @@ db = mysql.connector.connect(
 )
 cursor = db.cursor()
 
-# ========== 날짜 파서 ==========
 def parse_date(date_str):
     if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
         return date_str
     return None
 
-# ========== CSV 쓰기 시작 ==========
 with open(CSV_FILE, 'w', newline='', encoding='utf-8-sig') as f:
     writer = csv.writer(f)
     writer.writerow(['게시판종류', '제목', '작성일', '본문내용', '링크', '사진'])
@@ -75,7 +70,6 @@ with open(CSV_FILE, 'w', newline='', encoding='utf-8-sig') as f:
                 date_raw = row.select_one('td.dt').text.strip()
                 post_date = parse_date(date_raw)
 
-                # 게시글 본문 요청
                 post_res = requests.get(post_url, headers=HEADERS)
                 if post_res.status_code != 200:
                     continue
@@ -130,7 +124,7 @@ with open(CSV_FILE, 'w', newline='', encoding='utf-8-sig') as f:
                     cursor.execute(sql, (
                         '공지사항',
                         title,
-                        post_date,  # None이면 NULL 처리됨
+                        post_date,  
                         content,
                         post_url,
                         ';'.join(img_filenames)
@@ -153,7 +147,6 @@ with open(CSV_FILE, 'w', newline='', encoding='utf-8-sig') as f:
 
         page += 1
 
-# ========== 마무리 ==========
 cursor.close()
 db.close()
 print('\n🎉 전체 크롤링 및 저장 완료!')
