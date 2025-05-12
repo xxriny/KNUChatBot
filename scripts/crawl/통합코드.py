@@ -4,6 +4,7 @@ import csv
 import time
 import re
 import random
+import unicodedata
 from datetime import datetime
 from urllib.parse import urljoin
 import requests
@@ -12,8 +13,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
-SAVE_FOLDER = "통합_images"
-CSV_FILE = "메인20000여개.csv"
+SAVE_FOLDER = "통합 크롤링 코드_images"
+CSV_FILE = "통합 크롤링 코드.csv"
 os.makedirs(SAVE_FOLDER, exist_ok=True)
 
 # 요청 세션 설정 (재시도 및 백오프 적용)
@@ -24,10 +25,14 @@ session.mount("http://", adapter)
 session.mount("https://", adapter)
 
 all_data = []
+# ✅ 중복 체크용 세트
+existing_notice_keys = set()
 
+# 파일명에 쓸 수 없는 문자 제거 → 이미지 저장 시 오류 방지
 def sanitize_filename(name):
-    return "".join(c if c.isalnum() or c in (' ', '.', '_') else '_' for c in name)
+    return re.sub(r'[^\w\s_.-]', '_', name).strip()
 
+# 이미지를 실제로 다운로드하여 저장하는 함수.
 def save_image(img_url, folder, prefix, idx, original_name="image.jpg"):
     try:
         os.makedirs(folder, exist_ok=True)
@@ -71,19 +76,6 @@ def extract_table_text(table):
     )
 
 def extract_written_date(soup):
-    info_div = soup.select_one("div.bbs_right.bbs_count")
-    if info_div:
-        for span in info_div.find_all("span"):
-            span_text = span.get_text(strip=True)
-            if span_text.startswith("작성일"):
-                strong = span.find("strong")
-                raw_date = strong.get_text(strip=True) if strong else span_text.replace("작성일", "").strip()
-                try:
-                    dt = datetime.strptime(raw_date[:19], "%Y년 %m월 %d일 %H시 %M분 %S초")
-                    date = dt.strftime("%Y.%m.%d")
-                except ValueError:
-                    date = raw_date
-
     text = soup.get_text(" ", strip=True)
     match = re.search(r'20\d{2}[.\-/년\s]+[01]?\d[.\-/월\s]+[0-3]?\d[일\s]*', text)
     if match:
@@ -91,47 +83,65 @@ def extract_written_date(soup):
         return raw.strip(".")
     return "(작성일 없음)"
 
-def extract_img_links_from_filebox(soup, base_url):
-    img_links = []
-    for a in soup.select("div.b-file-box a.file-down-btn"):
-        name = a.text.strip()
-        href = a.get("href", "")
-        if not href:
-            continue
-        full_link = base_url + "/padm/life/notice-department.do" + href if href.startswith('?') else href
-        if name.lower().endswith(('.png', '.jpg', '.jpeg')):
-            img_links.append(full_link)
-    return img_links
+def generate_notice_key(title, date):
+    # ✅ 반복적으로 [ ], { }, < > 괄호 그룹만 제거 (소괄호 ()는 남김)
+    while re.search(r'(\[[^\]]*\]|\{[^\}]*\}|<[^>]*>)', title):
+        title = re.sub(r'(\[[^\]]*\]|\{[^\}]*\}|<[^>]*>)', '', title)
 
-# 이후 crawl_mainpage, crawl_library, crawl_administration, crawl_engineering 함수 내의
-# 모든 requests.get() 호출을 session.get()으로 변경 + time.sleep(random.uniform(0.5, 1.2)) 추가
-# 예시:
-# r = session.get(detail_url, headers=HEADERS)
-# time.sleep(random.uniform(0.5, 1.2))
+    title = title.replace('\u3000', ' ').replace('\xa0', ' ').replace('\u00A0', ' ').replace('\ufeff', ' ')
+    title = unicodedata.normalize('NFKD', title)
+    title = unicodedata.normalize('NFKC', title)
+    title = re.sub(r'\s+', ' ', title).strip()
+    title = title.lower()
 
-# 마지막 부분의 with open(...) 구문은 그대로 두되, 서버 부하 방지를 위한 로그도 추가하면 좋음
+    # ✅ (소괄호)는 유지하고 나머지 특수문자 제거
+    title = re.sub(r'[^가-힣a-z0-9()]', '', title)
+    # ✅ 작성일 전처리
+    date = date.replace('.', '').replace('-', '').replace('/', '').replace(' ', '').lower()
+
+    return f"{title}_{date}"
 
 
+
+
+
+# ✅ 공지 추가 시 사용하는 함수
+def add_notice_if_not_duplicate(title, date, content, link, images):
+    key = generate_notice_key(title, date)  # ✅ date 포함
+    if key not in existing_notice_keys:
+        existing_notice_keys.add(key)
+        all_data.append({
+            "제목": title,
+            "작성일": date,
+            "본문내용": content,
+            "링크": link,
+            "사진": images
+        })
+    else:
+        print(f"⛔️ 중복으로 저장 안함 : {title[:30]} ({date})")
+
+
+
+# 메인페이지 크롤링 함수
 def crawl_mainpage():
     print("\n📂 [메인페이지] 시작")
 
     BASE_URL = "https://www.kangwon.ac.kr"
     PATH_PREFIX = "/www"
-    HEADERS_LOCAL = {"User-Agent": "Mozilla/5.0"}
 
     categories = [
-        {"name": "공지사항", "bbsNo": "81", "key": "277", "last_page": 1459},
-        {"name": "행사안내", "bbsNo": "38", "key": "279", "last_page": 242},
-        {"name": "공모모집", "bbsNo": "345", "key": "1959", "last_page": 312},
-        {"name": "장학게시판", "bbsNo": "34", "key": "232", "last_page": 238},
+        {"name": "공지사항", "bbsNo": "81", "key": "277", "last_page": 1460},
+        {"name": "행사안내", "bbsNo": "38", "key": "279", "last_page": 250},
+        {"name": "공모모집", "bbsNo": "345", "key": "1959", "last_page": 320},
+        {"name": "장학게시판", "bbsNo": "34", "key": "232", "last_page": 250},
     ]
 
     visited_links = set()
 
     for cat in categories:
-        for page in range(1, 101):
+        for page in range(1, cat['last_page'] + 1):
             list_url = f"{BASE_URL}{PATH_PREFIX}/selectBbsNttList.do?bbsNo={cat['bbsNo']}&pageUnit=10&key={cat['key']}&pageIndex={page}"
-            res = session.get(list_url, headers=HEADERS_LOCAL)
+            res = session.get(list_url, headers=HEADERS)
             time.sleep(random.uniform(0.5, 1.2))
             soup = BeautifulSoup(res.text, 'html.parser')
             rows = soup.select("tbody tr")
@@ -159,7 +169,7 @@ def crawl_mainpage():
                 visited_links.add(detail_url)
 
                 try:
-                    r = session.get(detail_url, headers=HEADERS_LOCAL)
+                    r = session.get(detail_url, headers=HEADERS)
                     time.sleep(random.uniform(0.5, 1.2))
                     s = BeautifulSoup(r.text, 'html.parser')
 
@@ -178,15 +188,8 @@ def crawl_mainpage():
                     img_files = [save_image(link, os.path.join(SAVE_FOLDER, "main"), cat['bbsNo'], i) for i, link in enumerate(images)]
                     img_files = list(filter(None, img_files))
 
-                    all_data.append({
-                        "제목": title,
-                        "작성일": date,
-                        "본문내용": content,
-                        "링크": detail_url,
-                        "사진": ";".join(img_files)
-                        
-                    })
-                    print(f"📄 [{cat['name']}] {page}p - {title[:25]}")
+                    add_notice_if_not_duplicate(title, date, content, detail_url, ";".join(img_files))
+                    print(f"📄 [{cat['name']}] {page}p - {title[:35]}")
 
                 except Exception as e:
                     print(f"❌ 상세 페이지 실패: {title[:30]} ({e})")
@@ -197,34 +200,30 @@ def crawl_mainpage():
 
 
 
-# ========================================
-# 🟦 2. 도서관 크롤러
-# ========================================
-def crawl_library():
+def crawl_library(start_page=1, end_page=1):
     print("\n📂 [도서관] 시작")
     base_url = "https://library.kangwon.ac.kr"
     list_api = f"{base_url}/pyxis-api/1/bulletin-boards/24/bulletins"
     detail_api = f"{base_url}/pyxis-api/1/bulletins/24/{{id}}"
 
     per_page = 10
-    total_count = None
     seen_ids = set()
-    page = 0  # offset 방식 사용 시 page 대신 offset index
+    collected = 0  # 수집 개수 카운팅
 
-    while True:
-        params = {"offset": page * per_page, "max": 0}  # 🔁 핵심 변경
-        res = session.get(list_api, headers=HEADERS, params=params)
-        time.sleep(random.uniform(0.5, 1.2))
+    for page in range(start_page - 1, 250):
+        offset = page * per_page
+        params = {"offset": offset, "max": 10, "bulletinCategoryId": 1}
+        try:
+            res = session.get(list_api, headers=HEADERS, params=params)
+            time.sleep(random.uniform(0.5, 1.2))
+            data = res.json().get("data", {})
+        except Exception as e:
+            print(f"❌ 목록 API 요청 실패 (offset={offset}): {e}")
+            break
 
-        data = res.json().get("data", {})
         list_data = data.get("list", [])
-
-        if total_count is None:
-            total_count = data.get("totalCount", 0)
-            print(f"  📌 전체 공지 수: {total_count}개")
-
         if not list_data:
-            print("  🔚 도서관 공지 끝")
+            print("  🔚 데이터 없음, 중단")
             break
 
         for item in list_data:
@@ -236,47 +235,43 @@ def crawl_library():
             title = item['title']
             detail_url = f"{base_url}/community/bulletin/notice/{id_}"
 
-            detail = session.get(detail_api.format(id=id_), headers=HEADERS).json().get("data", {})
-            time.sleep(random.uniform(0.5, 1.2))
-            raw_date = detail.get("dateCreated", "작성일 없음")[:10]
-            date = raw_date.replace("-", ".")
-            html = detail.get("content", "")
-            soup = BeautifulSoup(html, "html.parser")
-            content = soup.get_text("\n", strip=True)
+            try:
+                detail = session.get(detail_api.format(id=id_), headers=HEADERS).json().get("data", {})
+                time.sleep(random.uniform(0.5, 1.2))
+                raw_date = detail.get("dateCreated", "작성일 없음")[:10]
+                date = raw_date.replace("-", ".")
+                html = detail.get("content", "")
+                soup = BeautifulSoup(html, "html.parser")
+                content = soup.get_text("\n", strip=True)
 
-            images = [urljoin(base_url, img['src']) for img in soup.find_all("img")
-                      if img.get("src") and "/pyxis-api/attachments/" in img['src']]
-            img_files = [save_image(link, os.path.join(SAVE_FOLDER, "library"), id_, i)
-                         for i, link in enumerate(images)]
+                images = [urljoin(base_url, img['src']) for img in soup.find_all("img")
+                        if img.get("src") and "/pyxis-api/attachments/" in img['src']]
+                img_files = [save_image(link, os.path.join(SAVE_FOLDER, "library"), id_, i)
+                        for i, link in enumerate(images)]
 
-            all_data.append({
-                "제목": title,
-                "작성일": date,
-                "본문내용": content,
-                "링크": detail_url,
-                "사진": ";".join(filter(None, img_files))
-            })
+                add_notice_if_not_duplicate(title, date, content, detail_url, ";".join(img_files))
 
-            print(f"📄 [도서관] offset={page * per_page} - {title[:25]}")
+                collected += 1
+                print(f"📄 [도서관] offset={offset} - {title[:35]}")
 
-        if (page + 1) * per_page >= total_count:
-            break
-        page += 1
+            except Exception as e:
+                print(f"❌ 상세 페이지 실패: {title[:30]} ({e})")
+
+    
 
 
 
 
-# ========================================
-# 🟦 3. 행정학과 크롤러
-# ========================================
+
+# 행정학과 크롤링 함수
 def crawl_administration():
     print("\n📂 [행정학과] 시작")
     base_url = "https://padm.kangwon.ac.kr"
 
-    for offset in range(0, 8000, 10):
+    for offset in range(0, 7250, 10):
         url = f"{base_url}/padm/life/notice-department.do?article.offset={offset}"
         try:
-            res = requests.get(url, headers=HEADERS)
+            res = session.get(url, headers=HEADERS)
             time.sleep(random.uniform(0.5, 1.2))  # ✅ 목록 페이지 요청 후 대기
             soup = BeautifulSoup(res.text, 'html.parser')
         except Exception as e:
@@ -296,10 +291,10 @@ def crawl_administration():
                 detail_link = f"{base_url}/padm/life/notice-department.do{relative[relative.find('?'):]}"
             else:
                 detail_link = f"{base_url}/padm/life/notice-department.do"
-            print(f"📄 [행정학과] {offset}~ - {title[:25]}")  # ✅ 간소화된 로그
+            print(f"📄 [행정학과] offset={offset} - {title[:35]}")  # ✅ 간소화된 로그
 
             try:
-                r = requests.get(detail_link, headers=HEADERS)
+                r = session.get(detail_link, headers=HEADERS)
                 time.sleep(random.uniform(0.5, 1.2))  # ✅ 상세 페이지 요청 후 대기
                 s = BeautifulSoup(r.text, 'html.parser')
 
@@ -334,13 +329,7 @@ def crawl_administration():
                 img_field = ";".join(img_files).strip()
 
                 # 데이터 저장
-                all_data.append({
-                    "제목": title,
-                    "작성일": date,
-                    "본문내용": content,
-                    "링크": detail_link,
-                    "사진": img_field
-                })
+                add_notice_if_not_duplicate(title, date, content, detail_link, ";".join(img_files))
 
             except Exception as e:
                 print(f"❌ 상세 페이지 실패: {title[:30]} ({e})")
@@ -348,17 +337,15 @@ def crawl_administration():
 
 
 
-# ========================================
-# 🟦 4. 공학교육혁신센터 크롤러
-# ========================================
+# 공학교육혁신센터 크롤링 함수
 def crawl_engineering():
     print("\n📂 [공학교육혁신센터] 시작")
     base_url = "https://icee.kangwon.ac.kr"
 
-    for page in range(1, 19):
+    for page in range(1, 20):
         url = f"{base_url}/index.php?mt=page&mp=5_1&mm=oxbbs&oxid=1&cpage={page}"
         try:
-            res = requests.get(url, headers=HEADERS)
+            res = session.get(url, headers=HEADERS)
             time.sleep(random.uniform(0.5, 1.2))
             soup = BeautifulSoup(res.text, 'html.parser')
         except Exception as e:
@@ -375,7 +362,7 @@ def crawl_engineering():
             raw_date = row.select_one("td.dt").text.strip().replace("-", ".")
 
             try:
-                r = requests.get(href, headers=HEADERS)
+                r = session.get(href, headers=HEADERS)
                 time.sleep(random.uniform(0.5, 1.2))
                 s = BeautifulSoup(r.text, 'html.parser')
                 content_div = s.select_one("div.view_cont") or s.select_one("div.note")
@@ -392,15 +379,9 @@ def crawl_engineering():
                             page, i
                         ))
 
-                all_data.append({
-                    "제목": title,
-                    "작성일": raw_date,
-                    "본문내용": content,
-                    "링크": href,
-                    "사진": ";".join(filter(None, img_files))
-                })
+                add_notice_if_not_duplicate(title, raw_date, content, href, ";".join(img_files))
 
-                print(f"📄 [공학교육혁신센터] {page}p - {title[:25]}")
+                print(f"📄 [공학교육혁신센터] {page}p - {title[:35]}")
 
             except Exception as e:
                 print(f"❌ 상세 페이지 실패: {title[:30]} ({e})")
@@ -412,9 +393,10 @@ def crawl_engineering():
 # ========================================
 if __name__ == "__main__":
     crawl_mainpage()
-    crawl_engineering()
-    crawl_administration()
     crawl_library()
+    crawl_administration()
+    crawl_engineering()
+    
 
     # CSV 저장
     with open(CSV_FILE, "w", newline="", encoding="utf-8-sig") as f:
