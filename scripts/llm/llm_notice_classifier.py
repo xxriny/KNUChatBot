@@ -17,48 +17,67 @@ with open("scripts/llm/prompt_template.txt", "r", encoding="utf-8") as f:
     prompt_template = f.read()
 
 # CSV 데이터 불러오기
-df = pd.read_csv("data/kangwon_library_notice.csv", encoding="cp949")
+df = pd.read_csv("data/kangwon_all_dept_notices_final.csv", encoding="utf-8")
 
 # 결과 저장용 리스트
 results = []
 
 # 한 행씩 프롬프트에 넣어 결과 생성
-for i, row in df.head(5).iterrows():
+for i, row in df.sample(n=5).iterrows():
     title = row.get("제목", "")
-    body = row.get("본문", "")
-    date = row.get("작성일", "")
-    link = row.get("상세 링크", "")    
+    body = row.get("본문", "")  
     
-    image_paths_str = str(row.get("이미지 파일 경로", "")).strip()
-    image_paths = image_paths_str.split(";") if image_paths_str.lower() != "nan" else []
-
-  
-    # 여러 이미지 처리
+    image_paths_str = str(row.get("이미지", "")).strip()
+    
+    # image_paths = image_paths_str.split(",") if image_paths_str.lower() != "nan" else []
+    
+    #NaN 방지 + 공백 제거 + 쉼표 분리 
+    if image_paths_str.lower() != "nan" and image_paths_str != "":
+        image_paths = [p.strip() for p in image_paths_str.split(",") if p.strip()]
+    else:
+        image_paths = []
+    
+    # 여러 이미지 처리리
+    uploaded_files = []
     for image_path in image_paths:
         image_path = image_path.strip()
-        if os.path.exists(image_path):
-             uploaded_files = client.files.upload(file=image_path)
+        full_image_path = os.path.join("data/images_content", image_path)
+        if os.path.exists(full_image_path):
+             uploaded_file = client.files.upload(file=full_image_path)
+             uploaded_files.append(uploaded_file)
         else:
-            print(f"⚠️ [NOTICE] index {i} - Image not found or invalid path: {image_path}")
+            print(f"[NOTICE] index {i} - Image not found or invalid path: {image_path}")
 
 
 
-    prompt = prompt_template.format(title=title, body=body, date=date, link=link)
+    prompt = prompt_template.format(title=title, body=body)
+    contents = [prompt] + uploaded_files
     
-    # 출력 텍스트를 파싱 (LLM이 JSON 형식 준다고 가정)
+    # 토큰 수 사전 측정
+    try:
+        token_info = client.models.count_tokens(model=MODEL_ID, contents=contents)
+        pre_token_count = token_info.total_tokens
+    except Exception as e:
+        print(f"[TOKEN COUNT ERROR] index {i} - {e}")
+        pre_token_count = None
+    
+    # 출력 텍스트를 파싱
     try:
         # Gemini API 요청
         response = client.models.generate_content(
             model=MODEL_ID,
-            contents=[
-                uploaded_files,
-                prompt
-            ]
+            contents=contents
         )
+
+        # 토큰 사용량 확인
+        usage = response.usage_metadata
+        prompt_token_count = usage.prompt_token_count if usage else None
+        response_token_count = usage.candidates_token_count if usage else None
+        total_token_count = usage.total_token_count if usage else None
         
         # 응답에서 텍스트 추출
         answer = response.candidates[0].content.parts[0].text.strip()
-        print(f"\n [LLM RAW RESPONSE - index {i}]:\n{answer}\n{'='*40}")
+        print(f"\n [LLM RAW RESPONSE - index {i}]:\n{answer}\n")
         
         # 백틱 감싼 부분 제거
         if answer.startswith("```"):
@@ -69,6 +88,16 @@ for i, row in df.head(5).iterrows():
         #  JSON 파싱
         parsed = json.loads(answer)
         results.append(parsed)
+
+        # Pre_token: contents에 들어간 입력(prompt+이미지등)을 기준으로 LLM이 생성 전에 사전 계산한 토큰 수
+        # Prompt_token: 실체 요청 시 사용된 입력의 토큰 수; pre_token_count와 거의 일치하지만, 가끔 내부 처리 차이로 미세한 차이가 날 수도 있음
+        # Response_token: 모델이 생성한 출력의 토큰 수
+        # Total_token: 입력+출력을 합친 총 토큰 수 (요금 청구구 기준)
+        print(f"[Token Summary] index {i}")
+        print(f"  pre_token_count       : {pre_token_count}")
+        print(f"  prompt_token_count    : {prompt_token_count}")
+        print(f"  response_token_count  : {response_token_count}")
+        print(f"  total_token_count     : {total_token_count}")
 
     except Exception as e:
         print(f"[PARSE ERROR] index {i} - {e}")
