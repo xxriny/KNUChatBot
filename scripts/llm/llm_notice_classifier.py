@@ -4,6 +4,28 @@ from google import genai
 import pandas as pd
 import json
 import re
+import pytesseract
+from PIL import Image
+
+pytesseract.pytesseract.tesseract_cmd = r"C:/Program Files/Tesseract-OCR/tesseract.exe"
+custom_config = r'--oem 3 --psm 6 -l kor+eng'
+
+def extract_text_from_images(image_paths):
+    ocr_texts = []
+    for image_path in image_paths:
+        print("image_path: " + image_path)
+        full_image_path = os.path.join("data/", image_path)
+        if os.path.exists(full_image_path):
+            try:
+                image = Image.open(full_image_path)
+                text = pytesseract.image_to_string(image, config=custom_config)
+                print(f"[OCR TEXT] {image_path}:\n{text.strip()}\n")  # OCR 결과 출력
+                ocr_texts.append(text.strip())
+            except Exception as e:
+                print(f"[OCR ERROR] {image_path} - {e}")
+        else:
+            print(f"[IMAGE NOT FOUND] {image_path}")
+    return "\n".join(ocr_texts)
 
 # API 키 로드
 load_dotenv()
@@ -17,41 +39,44 @@ with open("scripts/llm/prompt_template.txt", "r", encoding="utf-8") as f:
     prompt_template = f.read()
 
 # CSV 데이터 불러오기
-df = pd.read_csv("data/kangwon_all_dept_notices_final.csv", encoding="utf-8")
+df = pd.read_csv("data/통합 크롤링 코드.csv", encoding="utf-8")
 
 # 결과 저장용 리스트
 results = []
 
 # 한 행씩 프롬프트에 넣어 결과 생성
-for i, row in df.sample(n=5).iterrows():
+for i, row in df.sample(n=10).iterrows():
     title = row.get("제목", "")
-    body = row.get("본문", "")  
+    body = row.get("본문내용", "")  
     
-    image_paths_str = str(row.get("이미지", "")).strip()
+    image_paths_str = str(row.get("사진", "")).strip()
     
     # image_paths = image_paths_str.split(",") if image_paths_str.lower() != "nan" else []
     
     #NaN 방지 + 공백 제거 + 쉼표 분리 
     if image_paths_str.lower() != "nan" and image_paths_str != "":
-        image_paths = [p.strip() for p in image_paths_str.split(",") if p.strip()]
+        image_paths = [p.strip() for p in image_paths_str.split(";") if p.strip()]
     else:
         image_paths = []
+
+    ocr_text = extract_text_from_images(image_paths)
+    print("ocr_text: " + ocr_text)
     
-    # 여러 이미지 처리리
-    uploaded_files = []
-    for image_path in image_paths:
-        image_path = image_path.strip()
-        full_image_path = os.path.join("data/images_content", image_path)
-        if os.path.exists(full_image_path):
-             uploaded_file = client.files.upload(file=full_image_path)
-             uploaded_files.append(uploaded_file)
-        else:
-            print(f"[NOTICE] index {i} - Image not found or invalid path: {image_path}")
+    # # 여러 이미지 처리리
+    # uploaded_files = []
+    # for image_path in image_paths:
+    #     image_path = image_path.strip()
+    #     full_image_path = os.path.join("data/images_content", image_path)
+    #     if os.path.exists(full_image_path):
+    #          uploaded_file = client.files.upload(file=full_image_path)
+    #          uploaded_files.append(uploaded_file)
+    #     else:
+    #         print(f"[NOTICE] index {i} - Image not found or invalid path: {image_path}")
 
 
 
-    prompt = prompt_template.format(title=title, body=body)
-    contents = [prompt] + uploaded_files
+    prompt = prompt_template.format(title=title, body=body, ocr=ocr_text)
+    contents = [prompt]
     
     # 토큰 수 사전 측정
     try:
