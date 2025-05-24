@@ -1,20 +1,20 @@
 # KNU-ChatBot
 강원대 학생들은 위한 통합 챗봇
 
-📁 Directory Structure
-.
-├── 📁 data
+## 📁 Directory Structure
+./
+├── 📁 data/
 │   ├── 📄 origin_data.csv
-│   └── 📁 images
-│       └── ....
-├── 📁 scripts
-│   ├── 📁 chatBot
-│       └── chat_server_py
-│   └── 📁 crawl
-│       └── all_crawl.py
-│       └── today_crawl.py
-│   └── 📁 llm
-│       └── llm.py
+│   └── 📁 images/
+│       └── ...
+├── 📁 scripts/
+│   ├── 📁 chatBot/
+│   │   └── chat_server.py
+│   ├── 📁 crawl/
+│   │   ├── all_crawl.py
+│   │   └── today_crawl.py
+│   └── 📁 llm/
+│       ├── llm.py
 │       └── prompt.txt
 └── 📄 README.md (설치 및 실행 방법 포함)
 
