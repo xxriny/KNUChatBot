@@ -1,10 +1,29 @@
 # KNU-ChatBot
+강원대 학생들은 위한 통합 챗봇
 
-branch 무조건 사용할 것
+📁 Directory Structure
+.
+├── 📁 data
+│   ├── 📄 origin_data.csv
+│   └── 📁 images
+│       └── ....
+├── 📁 scripts
+│   ├── 📁 chatBot
+│       └── chat_server_py
+│   └── 📁 crawl
+│       └── all_crawl.py
+│       └── today_crawl.py
+│   └── 📁 llm
+│       └── llm.py
+│       └── prompt.txt
+└── 📄 README.md (설치 및 실행 방법 포함)
 
-data/ 폴더 아래에 csv파일 저장할 것.
-data/image 폴더 아래에 image 파일 저장할 것.
-scripts/ 폴더 아래에 모든 py파일 저장할 것.
-scripts/crawl/ 폴더 아래에 모든 크롤링 코드 저장할 것.
 
-각 사이트 크롤링 코드 이름 다르게 해서 저장할 것. ex) hangjang_crawl.py
+# 프로젝트 시작
+
+```
+git clone https://github.com/wheeze01/KNU-ChatBot.git
+```
+```
+git clone https://github.com/wheeze01/KNU-ChatBot.git
+```
