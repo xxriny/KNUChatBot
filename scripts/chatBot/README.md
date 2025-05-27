@@ -17,5 +17,5 @@ sudo snap install ngrok
 ```
 ngrok config add-authtoken <YOUR_AUTH_TOKEN>
 ```
-- ngrok http 5000 으로 외부 접속 수소 생성
+- ngrok http 5000 으로 외부 접속 주소 생성
 - chat_server_beta.py 실행
