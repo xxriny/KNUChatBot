@@ -1,5 +1,7 @@
 # ChatBot
-KNU CHATBOT 카카오 챗봇 연동 및 실행
+KNU CHATBOT
+강원대학교 챗봇 서비스
+공모전, 학사 일정, 비교과 활동 등의 정보를 제공
 
 # ngkrok 설치하기
 Linux 기준
@@ -17,5 +19,7 @@ sudo snap install ngrok
 ```
 ngrok config add-authtoken <YOUR_AUTH_TOKEN>
 ```
-- ngrok http 5000 으로 외부 접속 주소 생성
 - chat_server_beta.py 실행
+- default port 5000
+- ngrok http 5000 으로 외부 접속 주소 생성
+
