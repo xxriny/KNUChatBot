@@ -1,15 +1,13 @@
 # ChatBot
-KNU CHATBOT
 강원대학교 챗봇 서비스
 공모전, 학사 일정, 비교과 활동 등의 정보를 제공
 
-# ngkrok 설치하기
-Linux 기준
-
+# 사용 방법
+Linux 기준 ngrok 설치
 ```
 brew install ngrok/ngrok/ngrok
 ```
-windows 기준
+windows 기준 ngrok 설치
 ```
 sudo snap install ngrok
 ```
