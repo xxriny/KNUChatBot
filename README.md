@@ -12,7 +12,7 @@ By utilizing a KakaoTalk chatbot, the system automates the process of collecting
 2. 학생들은 개별 사이트를 방문하며 수집하는 대신 자동화된 KNU-ChatBot을 이용하여 원하는 정보를 얻을 수 있습니다.<br>
 3. 정보 접근성이 낮은 신입생, 복학생 등도 쉽게 접근할 수 있도록 정보를 제공합니다.<br>
 
-## Tech Stack
+## ⚙️ Tech Stack
 Web Crawling, OPEN API, DataBase, Kakao i Open Builder, Flask, ngrok
 
 ## 📁 Directory Structure
@@ -41,7 +41,6 @@ git clone https://github.com/wheeze01/KNU-ChatBot.git
 cd KNU-ChatBot
 ```
 ```
-#현재 가상환경에 설치된 패키지 목록
 pip install -r requirements.txt
 ```
 ```
@@ -50,3 +49,14 @@ python app.py
 ```
 ngrok http 5000
 ```
+
+## Roadmap
+<strong>Demo</strong> : 기본 기능 구현<br>
+<strong>Demo Ver.1</strong> : 학과별 정보 필터링, 챗봇 디자인<br>
+<strong>Demo Ver.2</strong> : 머신러닝 기반 정보 분류 모델 적용 및 시연<br>
+<strong>Demo Ver.3</strong> : RAG 기반 LLM 챗봇 고도화<br>
+
+## 향후 개선 사항
+- 데모 배포 및 버그 발생 시 해결<br>
+- 분류 모델과 생성 모델 선정<br>
+- 챗봇 고도화
