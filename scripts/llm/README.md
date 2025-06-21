@@ -38,3 +38,10 @@ python scripts/llm/llm_classify.py
 - 사진 필드는 ;로 구분된 다중 이미지 경로 지원
 
 - OCR 및 LLM 분류 결과를 CSV로 저장
+
+## 주의사항
+- OCR 처리 중 image not found, OCR 실패 등이 발생할 수 있으므로 이미지 경로 확인 필수
+
+- 응답 포맷은 백틱(```)으로 감싸진 JSON 형식이므로 파싱에 실패할 경우 무시
+
+- 토큰 수 초과 시 API 에러가 발생할 수 있으므로 입력 길이 주의

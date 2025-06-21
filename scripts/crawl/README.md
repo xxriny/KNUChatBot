@@ -10,7 +10,7 @@ kNU-ChatBot의 정보를 수집하는 크롤링 파이프라인이 구현되어 
 
 - 일정 주기로 자동 실행될 수 있도록 설계 (서버 배치 및 스케줄러와 연동)
 
-# 사용 방법
+## 사용 방법
 크롤링 실행
 ```
 python scripts/crawl/crawler_main.py
