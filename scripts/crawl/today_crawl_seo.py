@@ -20,7 +20,7 @@ CSV_FILE = "강원대 통합 공지사항 크롤링.csv"
 os.makedirs(SAVE_FOLDER, exist_ok=True)
 
 # ▼▼▼ 크롤링 시작 날짜 설정 ▼▼▼
-CRAWL_START_DATE = "2025-06-23"
+CRAWL_START_DATE = "2025-07-06"
 # ▲▲▲ 설정 완료 ▲▲▲
 
 # --- 세션 및 재시도 설정 ---
