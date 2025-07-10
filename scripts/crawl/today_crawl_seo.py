@@ -11,6 +11,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from tqdm import tqdm
 from difflib import SequenceMatcher
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
 from datetime import datetime, timedelta
 
 # --- 기본 설정 ---
@@ -20,7 +22,7 @@ CSV_FILE = "강원대 통합 공지사항 크롤링.csv"
 os.makedirs(SAVE_FOLDER, exist_ok=True)
 
 # ▼▼▼ 크롤링 시작 날짜 설정 ▼▼▼
-CRAWL_START_DATE = "2025-07-06"
+CRAWL_START_DATE = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
 # ▲▲▲ 설정 완료 ▲▲▲
 
 # --- 세션 및 재시도 설정 ---
@@ -57,6 +59,11 @@ def save_image(img_url, folder, prefix, idx, original_name="image.jpg"):
 
 def clean_html_keep_table(raw_html):
     soup = BeautifulSoup(raw_html, 'html.parser')
+    # ▼▼▼▼▼ 추가된 부분 ▼▼▼▼▼
+    # '사진 확대보기'를 포함한 span 태그를 찾아서 제거
+    for zoom_element in soup.select('span.photo_zoom'):
+        zoom_element.decompose()
+    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
     output = []
     for table in soup.find_all('table'):
         output.append(extract_table_text(table))
@@ -85,13 +92,29 @@ def extract_written_date(soup):
     return None
 
 def generate_notice_key(title, date):
+    """
+    제목과 날짜를 받아 표준화된 키를 생성합니다.
+    - 제목은 소문자화 및 유니코드 정규화됩니다.
+    - 특수문자는 제거하되, 단어 구분을 위한 단일 공백은 유지됩니다.
+    - 날짜는 구분자가 모두 제거된 숫자 형식으로 바뀝니다.
+    """
     temp_title = title if title else ""
     date_str = date if date else ""
-    while re.search(r'(\[[^\]]*\]|\{[^\}]*\}|<[^>]*>)', temp_title):
-        temp_title = re.sub(r'(\[[^\]]*\]|\{[^\}]*\}|<[^>]*>)', '', temp_title)
-    temp_title = re.sub(r'[^가-힣a-z0-9()]', '', unicodedata.normalize('NFKC', temp_title.lower()))
+
+    # 1. 유니코드 정규화 및 소문자 변환
+    processed_title = unicodedata.normalize('NFKC', temp_title.lower())
+    
+    # 2. 특수문자 제거 (알파벳, 숫자, 한글, 공백만 남김)
+    # 괄호 제거 로직을 삭제하고, 띄어쓰기를 보존하는 방식으로 변경
+    processed_title = re.sub(r'[^\w\s가-힣]', '', processed_title)
+    
+    # 3. 여러 개의 공백을 단일 공백으로 정규화
+    processed_title = ' '.join(processed_title.split())
+
+    # 4. 날짜 형식 표준화 (기존과 동일)
     date_str = date_str.replace('.', '').replace('-', '').replace('/', '').replace(' ', '').lower()
-    return f"{temp_title}_{date_str}"
+    
+    return f"{processed_title}_{date_str}"
 
 def get_soup(url):
     try:
@@ -140,11 +163,15 @@ def add_notice_if_not_duplicate(title, date, content, link, images):
     최종 로직에 따라 중복을 검사하고, 중복이 아닐 경우에만 데이터를 추가합니다.
     1. 현재 세션 내에서 완전 일치 및 유사도 검사
     2. 기존 CSV 데이터 중, 새 게시물 날짜 기준 -3일 범위 내에서만 완전 일치 및 유사도 검사
+    3. 유사도 검사 조건: Sequence Matcher >= 0.9 AND Cosine Similarity >= 0.8
     """
-    SIMILARITY_THRESHOLD = 0.97
+    SEQ_MATCHER_THRESHOLD = 0.9
+    COSINE_SIMILARITY_THRESHOLD = 0.8
     DATE_WINDOW_DAYS = 3
     new_key = generate_notice_key(title, date)
     normalized_new_title = generate_notice_key(title, "_").split('_')[0]
+    
+    vectorizer = TfidfVectorizer()
 
     # 1. 현재 세션 내에서 중복 검사 (완전 일치 + 유사도)
     try:
@@ -152,7 +179,7 @@ def add_notice_if_not_duplicate(title, date, content, link, images):
         for post_in_session in all_data:
             # (A) 완전 일치 검사
             if new_key == generate_notice_key(post_in_session['제목'], post_in_session['작성일']):
-                print(f"     🚫 [중복-세션/완전일치] {title[:40]}")
+                print(f"       🚫 [중복-세션/완전일치] {title[:40]}")
                 return False
             
             # (B) 유사도 검사 (날짜가 비슷한 경우에만 수행)
@@ -160,17 +187,24 @@ def add_notice_if_not_duplicate(title, date, content, link, images):
                 session_date_obj = datetime.strptime(post_in_session['작성일'], "%Y.%m.%d")
                 if abs((new_date_obj_session - session_date_obj).days) <= DATE_WINDOW_DAYS:
                     normalized_session_title = generate_notice_key(post_in_session['제목'], "_").split('_')[0]
-                    similarity = SequenceMatcher(None, normalized_new_title, normalized_session_title).ratio()
-                    if similarity >= SIMILARITY_THRESHOLD:
-                        print(f"     🚫 [중복-세션/유사도] {title[:40]}")
+                    
+                    seq_ratio = SequenceMatcher(None, normalized_new_title, normalized_session_title).ratio()
+                    
+                    try:
+                        tfidf_matrix = vectorizer.fit_transform([normalized_new_title, normalized_session_title])
+                        cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+                    except ValueError:
+                        cosine_sim = 0 # 단어가 없는 제목 처리
+
+                    if seq_ratio >= SEQ_MATCHER_THRESHOLD and cosine_sim >= COSINE_SIMILARITY_THRESHOLD:
+                        print(f"       🚫 [중복-세션/유사도] (Seq: {seq_ratio:.2f}, Cos: {cosine_sim:.2f}) {title[:40]}")
                         return False
             except (ValueError, TypeError):
-                continue # 세션 내 다른 게시물의 날짜 형식이 잘못되면 유사도 검사만 건너뜀
+                continue
     except (ValueError, TypeError):
-        # 새 게시물 날짜 파싱 실패 시, 세션 내 완전 일치 검사만 수행
         for post_in_session in all_data:
             if new_key == generate_notice_key(post_in_session['제목'], post_in_session['작성일']):
-                print(f"     🚫 [중복-세션/완전일치] {title[:40]}")
+                print(f"       🚫 [중복-세션/완전일치] {title[:40]}")
                 return False
 
     # 2. 기존 파일 데이터와 날짜 창(Date Window) 내에서 중복 검사 (완전 일치 + 유사도)
@@ -181,8 +215,7 @@ def add_notice_if_not_duplicate(title, date, content, link, images):
         for existing_post in pre_existing_data:
             try:
                 existing_date_str = existing_post.get('작성일')
-                if not existing_date_str:
-                    continue
+                if not existing_date_str: continue
                 
                 existing_date_obj = datetime.strptime(existing_date_str, "%Y.%m.%d")
 
@@ -190,13 +223,21 @@ def add_notice_if_not_duplicate(title, date, content, link, images):
                     existing_title = existing_post.get('제목', '')
                     
                     if new_key == generate_notice_key(existing_title, existing_date_str):
-                        print(f"     🚫 [중복-기존파일/완전일치] {title[:40]}")
+                        print(f"       🚫 [중복-기존파일/완전일치] {title[:40]}")
                         return False
                     
                     normalized_existing_title = generate_notice_key(existing_title, "_").split('_')[0]
-                    similarity = SequenceMatcher(None, normalized_new_title, normalized_existing_title).ratio()
-                    if similarity >= SIMILARITY_THRESHOLD:
-                        print(f"     🚫 [중복-기존파일/유사도] {title[:40]}")
+                    
+                    seq_ratio = SequenceMatcher(None, normalized_new_title, normalized_existing_title).ratio()
+
+                    try:
+                        tfidf_matrix = vectorizer.fit_transform([normalized_new_title, normalized_existing_title])
+                        cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+                    except ValueError:
+                        cosine_sim = 0 # 단어가 없는 제목 처리
+
+                    if seq_ratio >= SEQ_MATCHER_THRESHOLD and cosine_sim >= COSINE_SIMILARITY_THRESHOLD:
+                        print(f"       🚫 [중복-기존파일/유사도] (Seq: {seq_ratio:.2f}, Cos: {cosine_sim:.2f}) {title[:40]}")
                         return False
             except (ValueError, TypeError):
                 continue
@@ -285,7 +326,7 @@ def crawl_all_departments(board_dict, start_date_obj, max_page=None):
 
                     if is_too_old(date, start_date_obj):
                         if is_notice_row:
-                            print(f"       🟠 [오래된 공지] {title[:35]} (날짜: {date}) - 건너뜁니다.")
+                            print(f"         🟠 [오래된 공지] {title[:35]} (날짜: {date}) - 건너뜁니다.")
                             continue
                         else:
                             print(f"   🔚 [{dept}] 지정된 시작 날짜 이전 게시물 발견, 중단합니다.")
@@ -301,7 +342,6 @@ def crawl_all_departments(board_dict, start_date_obj, max_page=None):
                         prefix = f"{sanitize_filename(dept)}_{generate_notice_key(title, date)}"
                         folder_path = os.path.join(SAVE_FOLDER, "college_depts", sanitize_filename(dept))
                         
-
                         for i, img in enumerate(content_div.select("img")):
                             src = img.get("src")
                             if src and not src.startswith("data:"):
@@ -310,10 +350,10 @@ def crawl_all_departments(board_dict, start_date_obj, max_page=None):
                                 if saved_path: img_files.append(saved_path)
                     
                     if add_notice_if_not_duplicate(title, date, content, href, img_files):
-                        print(f"       📄 [수집] {title[:40]}")
+                        print(f"         📄 [수집] {title[:40]}")
 
                 except Exception as e:
-                    print(f"       ❌ 상세 페이지 처리 중 오류 발생: {title[:30]} ({e})")
+                    print(f"         ❌ 상세 페이지 처리 중 오류 발생: {title[:30]} ({e})")
             
             if current_page_links == previous_page_links:
                 print(f"     - [{dept}] 이전 페이지와 내용이 동일하여 중단합니다 (페이지네이션 없음).")
@@ -389,8 +429,11 @@ def crawl_mainpage(start_date_obj):
                             stop_crawling_this_category = True
                             break
                     
+                    # ▼▼▼▼▼ 주요 수정 부분 ▼▼▼▼▼
                     content_div = detail_soup.select_one("div#bbs_ntt_cn_con, td.bbs_content")
-                    content = content_div.get_text("\n", strip=True) if content_div else "(본문 없음)"
+                    # .get_text() 대신 clean_html_keep_table 함수를 사용하도록 변경
+                    content = clean_html_keep_table(str(content_div)) if content_div else "(본문 없음)"
+                    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
                     
                     img_tags = (content_div.select("img") if content_div else []) + (detail_soup.select("div.photo_area img") if detail_soup.select_one("div.photo_area") else [])
                     image_urls_with_duplicates = [urljoin(detail_url, img.get("src")) for img in img_tags if img.get("src") and not img.get("src").startswith("data:")]
@@ -409,7 +452,7 @@ def crawl_mainpage(start_date_obj):
             
             if stop_crawling_this_category:
                 break
-                
+            
     print("✅ [메인페이지] 완료")
 
 def crawl_library(start_date_obj):
@@ -632,6 +675,81 @@ def crawl_international(start_date_obj):
             
     print("✅ [국제교류처] 완료")
 
+
+def crawl_sw(start_date_obj):
+    print("\n📂 [SW중심대학사업단] 시작")
+    base_url = "https://sw.kangwon.ac.kr"
+    stop_crawling = False
+    
+    for page in tqdm(range(1, 100), desc="   [SW중심대학사업단]", leave=False):
+        if stop_crawling:
+            break
+            
+        list_url = f"{base_url}/index.php?mt=page&mp=5_1&mm=oxbbs&oxid=1&cpage={page}"
+        soup = get_soup(list_url)
+        if not soup:
+            break
+        
+        rows = soup.select("table.bbs_list > tbody > tr")
+        if not rows:
+            break
+
+        for row in rows:
+            try:
+                date_td = row.select_one("td:nth-last-child(2)")
+                title_tag = row.select_one("td.tit a")
+
+                if not date_td or not title_tag:
+                    continue
+
+                date = date_td.get_text(strip=True).replace("-", ".")
+                
+                is_notice_row = bool(row.select_one("img[alt='공지글']"))
+
+                if is_too_old(date, start_date_obj):
+                    if is_notice_row:
+                        print(f"           🟠 [오래된 공지] ... (날짜: {date}) - 건너뜁니다.")
+                        continue
+                    else:
+                        print(f"         🔚 [SW중심대학사업단] 지정된 시작 날짜 이전 게시물 발견, 중단합니다.")
+                        stop_crawling = True
+                        break
+
+                title = title_tag.get_text(strip=True)
+                detail_url = urljoin(base_url, title_tag.get("href"))
+                
+                detail_soup = get_soup(detail_url)
+                if not detail_soup:
+                    continue
+                delay_request()
+
+                content_div = detail_soup.select_one("table.bbs_view td.bbs_td[colspan='6']")
+                content = clean_html_keep_table(str(content_div)) if content_div else "(본문 없음)"
+
+                img_files = []
+                if content_div:
+                    prefix = f"sw_{generate_notice_key(title, date)}"
+                    folder_path = os.path.join(SAVE_FOLDER, "sw")
+                    
+                    for i, img in enumerate(content_div.select("img")):
+                        src = img.get("src")
+                        if src and not src.startswith("data:"):
+                            full_img_url = urljoin(detail_url, src)
+                            saved_path = save_image(full_img_url, folder_path, prefix, i, src)
+                            if saved_path:
+                                img_files.append(saved_path)
+
+                if add_notice_if_not_duplicate(title, date, content, detail_url, img_files):
+                    print(f"           📄 [수집] {title[:45]}")
+
+            except Exception as e:
+                print(f"         ❌ SW중심대학사업단 처리 중 오류 발생: {title[:30]} ({e})")
+        
+        if stop_crawling:
+            break
+            
+    print("✅ [SW중심대학사업단] 완료")
+    
 # --- 데이터 소스 ---
 college_intro_pages = [
     {'college_name': '간호대학', 'url': 'https://wwwk.kangwon.ac.kr/www/contents.do?key=1782&'},
@@ -677,6 +795,7 @@ if __name__ == "__main__":
     crawl_library(START_DATE_OBJ)
     crawl_engineering(START_DATE_OBJ)
     crawl_international(START_DATE_OBJ)
+    crawl_sw(START_DATE_OBJ)
 
     boards = extract_notice_board_urls(college_intro_pages)
     if boards:
