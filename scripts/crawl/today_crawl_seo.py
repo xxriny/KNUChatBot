@@ -84,12 +84,40 @@ def extract_table_text(table):
     )
 
 def extract_written_date(soup):
-    text = soup.get_text(" ", strip=True)
-    match = re.search(r'20\d{2}[.\-/년\s]+[01]?\d[.\-/월\s]+[0-3]?\d[일\s]*', text)
+    # 여러 웹사이트의 다양한 날짜 형식을 처리하기 위한 선택자 목록
+    selectors = [
+        "table.bbs_view tr:nth-of-type(2) td:nth-of-type(2)", # [추가] SW중심대학사업단 형식
+        "dd.info div.date",                                  # 공학교육혁신센터 형식
+        "div.bbs_right span:last-child",                     # 메인페이지 공지사항 형식
+        "li.b-date-box span:last-child",                     # 학과 페이지 형식
+        "div.b-etc-box li.b-date-box span",
+        "dl.date dd",
+        "span.date"
+    ]
+
+    for selector in selectors:
+        date_tag = soup.select_one(selector)
+        if date_tag:
+            date_text = date_tag.get_text(strip=True)
+            # '년월일', '.', '-' 구분자를 모두 처리하고 날짜 부분만 추출하는 정규식
+            match = re.search(r'(20\d{2}[.\s년-]+[01]?\d[.\s월-]+[0-3]?\d+)', date_text)
+            if match:
+                # 찾은 날짜 부분을 깔끔하게 정제 (YYYY.MM.DD 형식으로 통일)
+                cleaned_date = match.group(1)
+                # 구분자를 모두 '.'으로 변경하고 불필요한 문자는 제거
+                cleaned_date = cleaned_date.replace('년', '.').replace('월', '.').replace('일', '').replace('-', '.').replace(' ', '')
+                # 맨 끝에 '.'이 남는 경우 제거
+                return cleaned_date.strip('.')
+    
+    # 예비용: 위 선택자로 날짜를 못 찾았을 경우 페이지 전체 텍스트에서 검색
+    full_text = soup.get_text(" ", strip=True)
+    match = re.search(r'(20\d{2}[.\-/년\s]+[01]?\d[.\-/월\s]+[0-3]?\d+)', full_text)
     if match:
-        raw = match.group().replace(" ", "").replace("년", ".").replace("월", ".").replace("일", "")
-        return raw.strip(".")
-    return None
+        cleaned_date = match.group(1)
+        cleaned_date = cleaned_date.replace('년', '.').replace('월', '.').replace('일', '').replace(' ', '').replace('-', '.')
+        return cleaned_date.strip('.')
+
+    return "(작성일 없음)"
 
 def generate_notice_key(title, date):
     """
