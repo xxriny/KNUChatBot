@@ -8,7 +8,7 @@ app = Flask(__name__)
 # CSV 및 이미지 폴더 설정
 CSV_PATH = '../../data/icee_categorized_sample.csv'
 IMAGE_FOLDER = os.path.abspath('../../data/images')
-NGROK_BASE_URL = 'https://72ed-210-110-128-79.ngrok-free.app'
+NGROK_BASE_URL = 'https://062876307010.ngrok-free.app'
 
 # CSV 불러오기
 df = pd.read_csv(CSV_PATH)
