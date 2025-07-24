@@ -17,9 +17,14 @@ from datetime import datetime, timedelta
 
 # --- 기본 설정 ---
 HEADERS = {"User-Agent": "Mozilla/5.0"}
-SAVE_FOLDER = "강원대 전 기관 + 전 학과_이미지"
-CSV_FILE = "강원대 통합 공지사항 크롤링.csv"
-os.makedirs(SAVE_FOLDER, exist_ok=True)
+
+# ▼▼▼ 변경: 서버 저장 경로 설정 ▼▼▼
+SERVER_IMAGE_ROOT = '/home/data/images'  # 실제 이미지가 저장될 서버의 절대 경로
+WEB_IMAGE_ROOT_URL = 'https://kchatbot.azurewebsites.net/images' # 웹에서 접근할 이미지 URL의 기본 경로
+CSV_FILE = "/home/data/강원대 통합 공지사항 크롤링.csv" # CSV 파일의 절대 경로
+# ▲▲▲ 변경 완료 ▲▲▲
+
+os.makedirs(SERVER_IMAGE_ROOT, exist_ok=True) # 스크립트 시작 시 루트 이미지 폴더가 없으면 생성
 
 # ▼▼▼ 크롤링 시작 날짜 설정 ▼▼▼
 CRAWL_START_DATE = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
@@ -40,30 +45,40 @@ pre_existing_data = [] # 기존 CSV 데이터를 담을 리스트
 def sanitize_filename(name):
     return re.sub(r'[^\w\s_.-]', '_', name).strip()
 
-def save_image(img_url, folder, prefix, idx, original_name="image.jpg"):
+# ▼▼▼ 변경: save_image 함수 수정 ▼▼▼
+def save_image(img_url, physical_folder, web_url_base, prefix, idx, original_name="image.jpg"):
+    """
+    이미지를 서버의 물리적 경로(physical_folder)에 저장하고,
+    웹에서 접근 가능한 URL(web_url_base + filename)을 반환합니다.
+    """
     try:
-        os.makedirs(folder, exist_ok=True)
+        os.makedirs(physical_folder, exist_ok=True)
         ext = os.path.splitext(original_name)[1]
         if not ext or len(ext) > 5: ext = '.jpg'
         filename = sanitize_filename(f"{prefix}_{idx}{ext}")
-        filepath = os.path.join(folder, filename)
+        
+        physical_filepath = os.path.join(physical_folder, filename)
+        
         res = session.get(img_url, headers=HEADERS, timeout=10)
         time.sleep(random.uniform(0.1, 0.3))
+        
         if res.status_code == 200 and len(res.content) > 1024:
-            with open(filepath, "wb") as f:
+            with open(physical_filepath, "wb") as f:
                 f.write(res.content)
-            return filepath.replace("\\", "/")
+            
+            # 물리 경로가 아닌 웹 URL을 반환
+            web_url = f"{web_url_base}/{filename}"
+            return web_url
+            
     except Exception as e:
         print(f"       ⚠️ 이미지 저장 실패: {img_url} ({e})")
     return None
+# ▲▲▲ 변경 완료 ▲▲▲
 
 def clean_html_keep_table(raw_html):
     soup = BeautifulSoup(raw_html, 'html.parser')
-    # ▼▼▼▼▼ 추가된 부분 ▼▼▼▼▼
-    # '사진 확대보기'를 포함한 span 태그를 찾아서 제거
     for zoom_element in soup.select('span.photo_zoom'):
         zoom_element.decompose()
-    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
     output = []
     for table in soup.find_all('table'):
         output.append(extract_table_text(table))
@@ -84,64 +99,39 @@ def extract_table_text(table):
     )
 
 def extract_written_date(soup):
-    # 여러 웹사이트의 다양한 날짜 형식을 처리하기 위한 선택자 목록
     selectors = [
-        "table.bbs_view tr:nth-of-type(2) td:nth-of-type(2)", # [추가] SW중심대학사업단 형식
-        "dd.info div.date",                                  # 공학교육혁신센터 형식
-        "div.bbs_right span:last-child",                     # 메인페이지 공지사항 형식
-        "li.b-date-box span:last-child",                     # 학과 페이지 형식
+        "table.bbs_view tr:nth-of-type(2) td:nth-of-type(2)",
+        "dd.info div.date",
+        "div.bbs_right span:last-child",
+        "li.b-date-box span:last-child",
         "div.b-etc-box li.b-date-box span",
         "dl.date dd",
         "span.date"
     ]
-
     for selector in selectors:
         date_tag = soup.select_one(selector)
         if date_tag:
             date_text = date_tag.get_text(strip=True)
-            # '년월일', '.', '-' 구분자를 모두 처리하고 날짜 부분만 추출하는 정규식
             match = re.search(r'(20\d{2}[.\s년-]+[01]?\d[.\s월-]+[0-3]?\d+)', date_text)
             if match:
-                # 찾은 날짜 부분을 깔끔하게 정제 (YYYY.MM.DD 형식으로 통일)
                 cleaned_date = match.group(1)
-                # 구분자를 모두 '.'으로 변경하고 불필요한 문자는 제거
                 cleaned_date = cleaned_date.replace('년', '.').replace('월', '.').replace('일', '').replace('-', '.').replace(' ', '')
-                # 맨 끝에 '.'이 남는 경우 제거
                 return cleaned_date.strip('.')
-    
-    # 예비용: 위 선택자로 날짜를 못 찾았을 경우 페이지 전체 텍스트에서 검색
     full_text = soup.get_text(" ", strip=True)
     match = re.search(r'(20\d{2}[.\-/년\s]+[01]?\d[.\-/월\s]+[0-3]?\d+)', full_text)
     if match:
         cleaned_date = match.group(1)
         cleaned_date = cleaned_date.replace('년', '.').replace('월', '.').replace('일', '').replace(' ', '').replace('-', '.')
         return cleaned_date.strip('.')
-
     return "(작성일 없음)"
 
 def generate_notice_key(title, date):
-    """
-    제목과 날짜를 받아 표준화된 키를 생성합니다.
-    - 제목은 소문자화 및 유니코드 정규화됩니다.
-    - 특수문자는 제거하되, 단어 구분을 위한 단일 공백은 유지됩니다.
-    - 날짜는 구분자가 모두 제거된 숫자 형식으로 바뀝니다.
-    """
     temp_title = title if title else ""
     date_str = date if date else ""
-
-    # 1. 유니코드 정규화 및 소문자 변환
     processed_title = unicodedata.normalize('NFKC', temp_title.lower())
-    
-    # 2. 특수문자 제거 (알파벳, 숫자, 한글, 공백만 남김)
-    # 괄호 제거 로직을 삭제하고, 띄어쓰기를 보존하는 방식으로 변경
     processed_title = re.sub(r'[^\w\s가-힣]', '', processed_title)
-    
-    # 3. 여러 개의 공백을 단일 공백으로 정규화
     processed_title = ' '.join(processed_title.split())
-
-    # 4. 날짜 형식 표준화 (기존과 동일)
     date_str = date_str.replace('.', '').replace('-', '').replace('/', '').replace(' ', '').lower()
-    
     return f"{processed_title}_{date_str}"
 
 def get_soup(url):
@@ -158,7 +148,6 @@ def delay_request(min_sec=0.5, max_sec=1.5):
     time.sleep(random.uniform(min_sec, max_sec))
 
 def is_too_old(post_date_str, start_date_obj, date_format="%Y.%m.%d"):
-    """게시물 날짜가 지정된 시작 날짜보다 오래되었는지 확인"""
     if not post_date_str:
         return False
     try:
@@ -167,9 +156,7 @@ def is_too_old(post_date_str, start_date_obj, date_format="%Y.%m.%d"):
     except (ValueError, TypeError):
         return False
 
-# --- 핵심 로직: 데이터 로드 및 추가 ---
 def load_existing_data():
-    """시작 시 CSV 파일을 읽어 모든 데이터를 전역 리스트(pre_existing_data)에 로드합니다."""
     global pre_existing_data
     if not os.path.exists(CSV_FILE):
         print("📄 기존 CSV 파일이 없어 새로 시작합니다.")
@@ -187,43 +174,28 @@ def load_existing_data():
         print(f"❌ 기존 CSV 파일 로드 중 오류 발생: {e}")
 
 def add_notice_if_not_duplicate(title, date, content, link, images):
-    """
-    최종 로직에 따라 중복을 검사하고, 중복이 아닐 경우에만 데이터를 추가합니다.
-    1. 현재 세션 내에서 완전 일치 및 유사도 검사
-    2. 기존 CSV 데이터 중, 새 게시물 날짜 기준 -3일 범위 내에서만 완전 일치 및 유사도 검사
-    3. 유사도 검사 조건: Sequence Matcher >= 0.9 AND Cosine Similarity >= 0.8
-    """
     SEQ_MATCHER_THRESHOLD = 0.9
     COSINE_SIMILARITY_THRESHOLD = 0.8
     DATE_WINDOW_DAYS = 3
     new_key = generate_notice_key(title, date)
     normalized_new_title = generate_notice_key(title, "_").split('_')[0]
-    
     vectorizer = TfidfVectorizer()
-
-    # 1. 현재 세션 내에서 중복 검사 (완전 일치 + 유사도)
     try:
         new_date_obj_session = datetime.strptime(date, "%Y.%m.%d")
         for post_in_session in all_data:
-            # (A) 완전 일치 검사
             if new_key == generate_notice_key(post_in_session['제목'], post_in_session['작성일']):
                 print(f"       🚫 [중복-세션/완전일치] {title[:40]}")
                 return False
-            
-            # (B) 유사도 검사 (날짜가 비슷한 경우에만 수행)
             try:
                 session_date_obj = datetime.strptime(post_in_session['작성일'], "%Y.%m.%d")
                 if abs((new_date_obj_session - session_date_obj).days) <= DATE_WINDOW_DAYS:
                     normalized_session_title = generate_notice_key(post_in_session['제목'], "_").split('_')[0]
-                    
                     seq_ratio = SequenceMatcher(None, normalized_new_title, normalized_session_title).ratio()
-                    
                     try:
                         tfidf_matrix = vectorizer.fit_transform([normalized_new_title, normalized_session_title])
                         cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
                     except ValueError:
-                        cosine_sim = 0 # 단어가 없는 제목 처리
-
+                        cosine_sim = 0
                     if seq_ratio >= SEQ_MATCHER_THRESHOLD and cosine_sim >= COSINE_SIMILARITY_THRESHOLD:
                         print(f"       🚫 [중복-세션/유사도] (Seq: {seq_ratio:.2f}, Cos: {cosine_sim:.2f}) {title[:40]}")
                         return False
@@ -234,36 +206,26 @@ def add_notice_if_not_duplicate(title, date, content, link, images):
             if new_key == generate_notice_key(post_in_session['제목'], post_in_session['작성일']):
                 print(f"       🚫 [중복-세션/완전일치] {title[:40]}")
                 return False
-
-    # 2. 기존 파일 데이터와 날짜 창(Date Window) 내에서 중복 검사 (완전 일치 + 유사도)
     try:
         new_date_obj = datetime.strptime(date, "%Y.%m.%d")
         start_date_window = new_date_obj - timedelta(days=DATE_WINDOW_DAYS)
-
         for existing_post in pre_existing_data:
             try:
                 existing_date_str = existing_post.get('작성일')
                 if not existing_date_str: continue
-                
                 existing_date_obj = datetime.strptime(existing_date_str, "%Y.%m.%d")
-
                 if start_date_window <= existing_date_obj <= new_date_obj:
                     existing_title = existing_post.get('제목', '')
-                    
                     if new_key == generate_notice_key(existing_title, existing_date_str):
                         print(f"       🚫 [중복-기존파일/완전일치] {title[:40]}")
                         return False
-                    
                     normalized_existing_title = generate_notice_key(existing_title, "_").split('_')[0]
-                    
                     seq_ratio = SequenceMatcher(None, normalized_new_title, normalized_existing_title).ratio()
-
                     try:
                         tfidf_matrix = vectorizer.fit_transform([normalized_new_title, normalized_existing_title])
                         cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
                     except ValueError:
-                        cosine_sim = 0 # 단어가 없는 제목 처리
-
+                        cosine_sim = 0
                     if seq_ratio >= SEQ_MATCHER_THRESHOLD and cosine_sim >= COSINE_SIMILARITY_THRESHOLD:
                         print(f"       🚫 [중복-기존파일/유사도] (Seq: {seq_ratio:.2f}, Cos: {cosine_sim:.2f}) {title[:40]}")
                         return False
@@ -271,12 +233,9 @@ def add_notice_if_not_duplicate(title, date, content, link, images):
                 continue
     except (ValueError, TypeError):
         pass
-
-    # 모든 중복 검사를 통과하면 데이터 추가
     all_data.append({"제목": title, "작성일": date, "본문내용": content, "링크": link, "사진": ";".join(images)})
     return True
 
-# --- 크롤링 함수 ---
 def extract_notice_board_urls(college_pages_list):
     department_boards_dict = {}
     base_wwwk_url = "https://wwwk.kangwon.ac.kr"
@@ -297,7 +256,6 @@ def extract_notice_board_urls(college_pages_list):
                     url = url.replace("wwwk.kangwon.ac.kr/wwwk.kangwon.ac.kr", "wwwk.kangwon.ac.kr")
                     department_boards_dict[name] = url
         time.sleep(0.1)
-        
     for dept_name, manual_url in manual_board_mapping.items():
         department_boards_dict[dept_name] = manual_url
     print(f"✅ 총 {len(department_boards_dict)}개의 학과 공지사항 URL 수집 완료.")
@@ -322,7 +280,6 @@ def crawl_all_departments(board_dict, start_date_obj, max_page=None):
             soup = get_soup(page_url)
             if not soup: break
             rows = soup.select("tbody tr")
-
             first_row_text = rows[0].get_text() if rows else ""
             if not rows or (len(rows) == 1 and "등록된 글이 없습니다" in first_row_text):
                 if page == 0: print(f"     - 등록된 글이 없습니다.")
@@ -334,7 +291,6 @@ def crawl_all_departments(board_dict, start_date_obj, max_page=None):
                     is_notice_row = row.select_one("td") and "공지" in row.select_one("td").text
                     a_tag = row.select_one("a")
                     if not a_tag: continue
-                    
                     raw_href = a_tag.get("href")
                     parsed_href = urlparse(raw_href)
                     query_params = parse_qs(parsed_href.query)
@@ -342,14 +298,11 @@ def crawl_all_departments(board_dict, start_date_obj, max_page=None):
                     normalized_query = urlencode(query_params, doseq=True)
                     normalized_href = urlunparse(parsed_href._replace(query=normalized_query))
                     current_page_links.add(normalized_href)
-
                     title = a_tag.get_text(strip=True)
                     href = urljoin(url, raw_href)
-                    
                     detail_soup = get_soup(href)
                     if not detail_soup: continue
                     delay_request(0.1, 0.3)
-                    
                     date = extract_written_date(detail_soup)
 
                     if is_too_old(date, start_date_obj):
@@ -366,16 +319,21 @@ def crawl_all_departments(board_dict, start_date_obj, max_page=None):
                     
                     img_files = []
                     if content_div:
-                        
-                        prefix = f"{sanitize_filename(dept)}_{generate_notice_key(title, date)}"
-                        folder_path = os.path.join(SAVE_FOLDER, "college_depts", sanitize_filename(dept))
+                        # ▼▼▼ 변경: 이미지 저장 경로 및 URL 생성 ▼▼▼
+                        dept_folder_name = sanitize_filename(dept)
+                        physical_save_folder = os.path.join(SERVER_IMAGE_ROOT, "college_depts", dept_folder_name)
+                        web_url_folder = f"{WEB_IMAGE_ROOT_URL}/college_depts/{dept_folder_name}"
+                        prefix = f"{dept_folder_name}_{generate_notice_key(title, date)}"
+                        # ▲▲▲ 변경 완료 ▲▲▲
                         
                         for i, img in enumerate(content_div.select("img")):
                             src = img.get("src")
                             if src and not src.startswith("data:"):
                                 full_img_url = urljoin(href, src)
-                                saved_path = save_image(full_img_url, folder_path, prefix, i, src)
-                                if saved_path: img_files.append(saved_path)
+                                # ▼▼▼ 변경: save_image 함수 호출 인자 수정 ▼▼▼
+                                saved_url = save_image(full_img_url, physical_save_folder, web_url_folder, prefix, i, src)
+                                if saved_url: img_files.append(saved_url)
+                                # ▲▲▲ 변경 완료 ▲▲▲
                     
                     if add_notice_if_not_duplicate(title, date, content, href, img_files):
                         print(f"         📄 [수집] {title[:40]}")
@@ -391,7 +349,7 @@ def crawl_all_departments(board_dict, start_date_obj, max_page=None):
             if stop_crawling_this_dept: break
             page += 1
             delay_request()
-        
+            
         if not stop_crawling_this_dept: print(f"✅ [{dept}] 확인 완료 (최대 {max_page}페이지).")
 
 def crawl_mainpage(start_date_obj):
@@ -409,24 +367,20 @@ def crawl_mainpage(start_date_obj):
         print(f"   ➡️  [{cat['name']}] 수집 중...")
         stop_crawling_this_category = False
         for page in range(1, 999): 
-            if stop_crawling_this_category:
-                break
+            if stop_crawling_this_category: break
             
             list_url = f"{BASE_URL}{PATH_PREFIX}/selectBbsNttList.do?bbsNo={cat['bbsNo']}&pageUnit=10&key={cat['key']}&pageIndex={page}"
             soup = get_soup(list_url)
-            if not soup:
-                break
+            if not soup: break
             
             rows = soup.select("tbody tr")
-            if not rows:
-                break
+            if not rows: break
             
             for row in rows:
                 try:
                     is_notice_row = row.select_one("td") and '공지' in row.select_one("td").get_text(strip=True)
                     a_tag = row.select_one("td.subject a")
-                    if not a_tag:
-                        continue
+                    if not a_tag: continue
 
                     title = a_tag.get_text(strip=True)
                     href = a_tag.get("href", "")
@@ -434,16 +388,14 @@ def crawl_mainpage(start_date_obj):
                     detail_url = ""
                     if "fnSelectBbsNttView" in href:
                         match = re.search(r"fnSelectBbsNttView\('(\d+)',\s*'(\d+)',\s*'(\d+)'\)", href)
-                        if not match:
-                            continue
+                        if not match: continue
                         bbs_no, ntt_no, key_param = match.groups()
                         detail_url = f"{BASE_URL}{PATH_PREFIX}/selectBbsNttView.do?bbsNo={bbs_no}&nttNo={ntt_no}&key={key_param}"
                     else:
                         detail_url = urljoin(f"{BASE_URL}{PATH_PREFIX}/", href)
 
                     detail_soup = get_soup(detail_url)
-                    if not detail_soup:
-                        continue
+                    if not detail_soup: continue
                     delay_request()
                     
                     date = extract_written_date(detail_soup)
@@ -457,20 +409,20 @@ def crawl_mainpage(start_date_obj):
                             stop_crawling_this_category = True
                             break
                     
-                    # ▼▼▼▼▼ 주요 수정 부분 ▼▼▼▼▼
                     content_div = detail_soup.select_one("div#bbs_ntt_cn_con, td.bbs_content")
-                    # .get_text() 대신 clean_html_keep_table 함수를 사용하도록 변경
                     content = clean_html_keep_table(str(content_div)) if content_div else "(본문 없음)"
-                    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
                     
                     img_tags = (content_div.select("img") if content_div else []) + (detail_soup.select("div.photo_area img") if detail_soup.select_one("div.photo_area") else [])
                     image_urls_with_duplicates = [urljoin(detail_url, img.get("src")) for img in img_tags if img.get("src") and not img.get("src").startswith("data:")]
                     images_urls = list(dict.fromkeys(image_urls_with_duplicates))
-
+                    
+                    # ▼▼▼ 변경: 이미지 저장 경로 및 URL 생성, save_image 호출 ▼▼▼
+                    physical_save_folder = os.path.join(SERVER_IMAGE_ROOT, "main")
+                    web_url_folder = f"{WEB_IMAGE_ROOT_URL}/main"
                     prefix = f"main_{generate_notice_key(title, date)}"
-                    save_folder_path = os.path.join(SAVE_FOLDER, "main")
-                    img_files = [save_image(link, save_folder_path, prefix, i, link) for i, link in enumerate(images_urls)]
+                    img_files = [save_image(link, physical_save_folder, web_url_folder, prefix, i, link) for i, link in enumerate(images_urls)]
                     img_files = list(filter(None, img_files))
+                    # ▲▲▲ 변경 완료 ▲▲▲
 
                     if add_notice_if_not_duplicate(title, date, content, detail_url, img_files):
                         print(f"         📄 [수집] {title[:45]}")
@@ -478,10 +430,11 @@ def crawl_mainpage(start_date_obj):
                 except Exception as e:
                     print(f"       ❌ 메인페이지 상세 실패: {title[:30]} ({e})")
             
-            if stop_crawling_this_category:
-                break
+            if stop_crawling_this_category: break
             
     print("✅ [메인페이지] 완료")
+
+# 이하 crawl_library, crawl_engineering, crawl_international, crawl_sw 함수들도 동일한 패턴으로 수정됩니다.
 
 def crawl_library(start_date_obj):
     print("\n📂 [도서관] 시작")
@@ -491,24 +444,21 @@ def crawl_library(start_date_obj):
     stop_crawling = False
     
     for page in tqdm(range(0, 999), desc="   [도서관]", leave=False): 
-        if stop_crawling:
-            break
+        if stop_crawling: break
         
         params = {"offset": page * 10, "max": 10, "bulletinCategoryId": 1}
         try:
             res = session.get(list_api, headers=HEADERS, params=params, timeout=10)
             res.raise_for_status()
             list_data = res.json().get("data", {}).get("list", [])
-            if not list_data:
-                break
+            if not list_data: break
             
             for item in list_data:
                 try:
                     is_notice_item = item.get('isNotice', False)
                     title = item.get('title', '(제목 없음)')
                     item_id = item.get('id')
-                    if not item_id:
-                        continue
+                    if not item_id: continue
 
                     detail_res = session.get(detail_api_template.format(id=item_id), headers=HEADERS, timeout=10)
                     detail_res.raise_for_status()
@@ -533,14 +483,19 @@ def crawl_library(start_date_obj):
                     content = content_soup.get_text("\n", strip=True)
                     
                     img_files = []
+                    # ▼▼▼ 변경: 이미지 저장 경로 및 URL 생성, save_image 호출 ▼▼▼
+                    physical_save_folder = os.path.join(SERVER_IMAGE_ROOT, "library")
+                    web_url_folder = f"{WEB_IMAGE_ROOT_URL}/library"
                     prefix = f"library_{generate_notice_key(title, date_for_csv)}"
+                    # ▲▲▲ 변경 완료 ▲▲▲
                     for i, img in enumerate(content_soup.select("img")):
                         src = img.get("src")
                         if src and "/pyxis-api/attachments/" in src:
                             full_img_url = urljoin(base_url, src)
-                            saved_path = save_image(full_img_url, os.path.join(SAVE_FOLDER, "library"), prefix, i)
-                            if saved_path:
-                                img_files.append(saved_path)
+                            # ▼▼▼ 변경: save_image 함수 호출 인자 수정 ▼▼▼
+                            saved_url = save_image(full_img_url, physical_save_folder, web_url_folder, prefix, i)
+                            if saved_url: img_files.append(saved_url)
+                            # ▲▲▲ 변경 완료 ▲▲▲
                     
                     if add_notice_if_not_duplicate(title, date_for_csv, content, detail_url, img_files):
                         print(f"         📄 [수집] {title[:45]}")
@@ -548,8 +503,7 @@ def crawl_library(start_date_obj):
                 except Exception as e:
                     print(f"     - 도서관 상세 처리 실패: {e}")
             
-            if stop_crawling:
-                break
+            if stop_crawling: break
         except requests.exceptions.RequestException as e:
             print(f"     - 도서관 목록 요청 실패 (page={page}): {e}")
             break
@@ -562,24 +516,20 @@ def crawl_engineering(start_date_obj):
     stop_crawling = False
     
     for page in tqdm(range(1, 999), desc="   [공학교육혁신센터]", leave=False):
-        if stop_crawling:
-            break
+        if stop_crawling: break
         
         list_url = f"{base_url}/index.php?mt=page&mp=5_1&mm=oxbbs&oxid=1&cpage={page}"
         soup = get_soup(list_url)
-        if not soup:
-            break
+        if not soup: break
             
         rows = soup.select("table.bbs_list tbody tr")
-        if not rows:
-            break
+        if not rows: break
 
         for row in rows:
             try:
                 a_tag = row.select_one("td.tit a")
                 date_td = row.select_one("td.dt")
-                if not a_tag or not date_td:
-                    continue
+                if not a_tag or not date_td: continue
 
                 title = a_tag.get_text(strip=True)
                 date = date_td.text.strip().replace("-", ".")
@@ -596,8 +546,7 @@ def crawl_engineering(start_date_obj):
 
                 detail_url = urljoin(base_url, a_tag['href'])
                 detail_soup = get_soup(detail_url)
-                if not detail_soup:
-                    continue
+                if not detail_soup: continue
                 delay_request()
                 
                 content_div = detail_soup.select_one("div.view_cont, div.note")
@@ -605,14 +554,19 @@ def crawl_engineering(start_date_obj):
                 
                 img_files = []
                 if content_div:
+                    # ▼▼▼ 변경: 이미지 저장 경로 및 URL 생성 ▼▼▼
+                    physical_save_folder = os.path.join(SERVER_IMAGE_ROOT, "engineering")
+                    web_url_folder = f"{WEB_IMAGE_ROOT_URL}/engineering"
                     prefix = f"engineering_{generate_notice_key(title, date)}"
+                    # ▲▲▲ 변경 완료 ▲▲▲
                     for i, img in enumerate(content_div.select("img")):
                         src = img.get("src")
                         if src and not src.startswith("data:"):
                             full_img_url = urljoin(detail_url, src)
-                            saved_path = save_image(full_img_url, os.path.join(SAVE_FOLDER, "engineering"), prefix, i, src)
-                            if saved_path:
-                                img_files.append(saved_path)
+                            # ▼▼▼ 변경: save_image 함수 호출 인자 수정 ▼▼▼
+                            saved_url = save_image(full_img_url, physical_save_folder, web_url_folder, prefix, i, src)
+                            if saved_url: img_files.append(saved_url)
+                            # ▲▲▲ 변경 완료 ▲▲▲
                 
                 if add_notice_if_not_duplicate(title, date, content, detail_url, img_files):
                     print(f"         📄 [수집] {title[:45]}")
@@ -620,8 +574,7 @@ def crawl_engineering(start_date_obj):
             except Exception as e:
                 print(f"     - 공학교육혁신센터 상세 처리 실패: {e}")
         
-        if stop_crawling:
-            break
+        if stop_crawling: break
             
     print("✅ [공학교육혁신센터] 완료")
 
@@ -632,24 +585,20 @@ def crawl_international(start_date_obj):
     stop_crawling = False
     
     for offset in tqdm(range(0, 9999, 10), desc="   [국제교류처]", leave=False):
-        if stop_crawling:
-            break
+        if stop_crawling: break
             
         list_url = f"{base_url}{path}?article.offset={offset}"
         soup = get_soup(list_url)
-        if not soup:
-            break
+        if not soup: break
         
         rows = soup.select("tbody > tr")
-        if not rows:
-            break
+        if not rows: break
 
         for row in rows:
             try:
                 title_tag = row.select_one("td.b-td-left a")
                 date_tag = row.select_one("td:nth-last-child(3)")
-                if not title_tag or not date_tag:
-                    continue
+                if not title_tag or not date_tag: continue
 
                 title = title_tag.get_text(strip=True)
                 date_str = date_tag.get_text(strip=True)
@@ -669,13 +618,11 @@ def crawl_international(start_date_obj):
                 parsed_href = urlparse(href)
                 query_params = parse_qs(parsed_href.query)
                 article_no = query_params.get('articleNo', [None])[0]
-                if not article_no:
-                    continue
+                if not article_no: continue
                 
                 detail_url = f"{base_url}{path}?mode=view&articleNo={article_no}"
                 detail_soup = get_soup(detail_url)
-                if not detail_soup:
-                    continue
+                if not detail_soup: continue
                 delay_request()
                 
                 content_div = detail_soup.select_one("div.b-content-box")
@@ -683,14 +630,19 @@ def crawl_international(start_date_obj):
                 
                 img_files = []
                 if content_div:
+                    # ▼▼▼ 변경: 이미지 저장 경로 및 URL 생성 ▼▼▼
+                    physical_save_folder = os.path.join(SERVER_IMAGE_ROOT, "international")
+                    web_url_folder = f"{WEB_IMAGE_ROOT_URL}/international"
                     prefix = f"international_{generate_notice_key(title, date)}"
+                    # ▲▲▲ 변경 완료 ▲▲▲
                     for i, img in enumerate(content_div.select("img")):
                         src = img.get("src")
                         if src and not src.startswith("data:"):
                             full_img_url = urljoin(detail_url, src)
-                            saved_path = save_image(full_img_url, os.path.join(SAVE_FOLDER, "international"), prefix, i, src)
-                            if saved_path:
-                                img_files.append(saved_path)
+                            # ▼▼▼ 변경: save_image 함수 호출 인자 수정 ▼▼▼
+                            saved_url = save_image(full_img_url, physical_save_folder, web_url_folder, prefix, i, src)
+                            if saved_url: img_files.append(saved_url)
+                            # ▲▲▲ 변경 완료 ▲▲▲
                 
                 if add_notice_if_not_duplicate(title, date, content, detail_url, img_files):
                     print(f"         📄 [수집] {title[:45]}")
@@ -698,11 +650,9 @@ def crawl_international(start_date_obj):
             except Exception as e:
                 print(f"     - 국제교류처 처리 중 오류 발생: {e}")
         
-        if stop_crawling:
-            break
+        if stop_crawling: break
             
     print("✅ [국제교류처] 완료")
-
 
 def crawl_sw(start_date_obj):
     print("\n📂 [SW중심대학사업단] 시작")
@@ -710,28 +660,22 @@ def crawl_sw(start_date_obj):
     stop_crawling = False
     
     for page in tqdm(range(1, 100), desc="   [SW중심대학사업단]", leave=False):
-        if stop_crawling:
-            break
+        if stop_crawling: break
             
         list_url = f"{base_url}/index.php?mt=page&mp=5_1&mm=oxbbs&oxid=1&cpage={page}"
         soup = get_soup(list_url)
-        if not soup:
-            break
+        if not soup: break
         
         rows = soup.select("table.bbs_list > tbody > tr")
-        if not rows:
-            break
+        if not rows: break
 
         for row in rows:
             try:
                 date_td = row.select_one("td:nth-last-child(2)")
                 title_tag = row.select_one("td.tit a")
-
-                if not date_td or not title_tag:
-                    continue
+                if not date_td or not title_tag: continue
 
                 date = date_td.get_text(strip=True).replace("-", ".")
-                
                 is_notice_row = bool(row.select_one("img[alt='공지글']"))
 
                 if is_too_old(date, start_date_obj):
@@ -747,8 +691,7 @@ def crawl_sw(start_date_obj):
                 detail_url = urljoin(base_url, title_tag.get("href"))
                 
                 detail_soup = get_soup(detail_url)
-                if not detail_soup:
-                    continue
+                if not detail_soup: continue
                 delay_request()
 
                 content_div = detail_soup.select_one("table.bbs_view td.bbs_td[colspan='6']")
@@ -756,16 +699,20 @@ def crawl_sw(start_date_obj):
 
                 img_files = []
                 if content_div:
+                    # ▼▼▼ 변경: 이미지 저장 경로 및 URL 생성 ▼▼▼
+                    physical_save_folder = os.path.join(SERVER_IMAGE_ROOT, "sw")
+                    web_url_folder = f"{WEB_IMAGE_ROOT_URL}/sw"
                     prefix = f"sw_{generate_notice_key(title, date)}"
-                    folder_path = os.path.join(SAVE_FOLDER, "sw")
+                    # ▲▲▲ 변경 완료 ▲▲▲
                     
                     for i, img in enumerate(content_div.select("img")):
                         src = img.get("src")
                         if src and not src.startswith("data:"):
                             full_img_url = urljoin(detail_url, src)
-                            saved_path = save_image(full_img_url, folder_path, prefix, i, src)
-                            if saved_path:
-                                img_files.append(saved_path)
+                            # ▼▼▼ 변경: save_image 함수 호출 인자 수정 ▼▼▼
+                            saved_url = save_image(full_img_url, physical_save_folder, web_url_folder, prefix, i, src)
+                            if saved_url: img_files.append(saved_url)
+                            # ▲▲▲ 변경 완료 ▲▲▲
 
                 if add_notice_if_not_duplicate(title, date, content, detail_url, img_files):
                     print(f"           📄 [수집] {title[:45]}")
@@ -773,8 +720,7 @@ def crawl_sw(start_date_obj):
             except Exception as e:
                 print(f"         ❌ SW중심대학사업단 처리 중 오류 발생: {title[:30]} ({e})")
         
-        if stop_crawling:
-            break
+        if stop_crawling: break
             
     print("✅ [SW중심대학사업단] 완료")
     
@@ -829,7 +775,6 @@ if __name__ == "__main__":
     if boards:
         crawl_all_departments(boards, START_DATE_OBJ, max_page=None) 
 
-    # 수집된 새 데이터를 파일에 추가
     if not all_data:
         print("\n✅ 추가할 새로운 게시글이 없습니다.")
     else:
