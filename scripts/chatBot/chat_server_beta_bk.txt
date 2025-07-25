@@ -2,24 +2,13 @@ from flask import Flask, request, jsonify, send_from_directory
 import pandas as pd
 import os
 from datetime import datetime
-import logging
-from difflib import get_close_matches
-
-logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
-@app.route('/')
-def hello():
-    return '안녕'
-
 # CSV 및 이미지 폴더 설정
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CSV_PATH = os.path.join(BASE_DIR, 'data/llm_classified_results.csv')
-IMAGE_FOLDER = '/home/data/images'
-AZURE_BASE_URL = 'https://kchatbot.azurewebsites.net'
-
+CSV_PATH = '../../data/llm_classified_results.csv'
+IMAGE_FOLDER = os.path.abspath('../../data/images')
+NGROK_BASE_URL = 'https://db19ce61487b.ngrok-free.app'
 
 # CSV 불러오기
 df = pd.read_csv(CSV_PATH)
@@ -134,7 +123,7 @@ def message():
 
     # 카드 생성
     cards = []
-    default_image = f"{AZURE_BASE_URL}/images/default.png" 
+    default_image = f"{NGROK_BASE_URL}/images/default.png" 
     for _, row in matches.head(3).iterrows():
         title = row['title']
         one_line = row['one_line'] if pd.notna(row['one_line']) else '요약 없음'
@@ -143,9 +132,10 @@ def message():
 
         link = row['detail_link']
         raw_path = row['imageUrl']
-   
+        image_url = f"{NGROK_BASE_URL}/images/{os.path.basename(raw_path)}" if pd.notna(raw_path) and raw_path else None
+            
         if pd.notna(raw_path) and raw_path:
-            image_url = f"{AZURE_BASE_URL}/images/{os.path.basename(raw_path)}"
+            image_url = f"{NGROK_BASE_URL}/images/{os.path.basename(raw_path)}"
         else:
             image_url = default_image
         card = {
@@ -176,4 +166,5 @@ def message():
         }
     })
 
-
+if __name__ == '__main__':
+    app.run(port=5000)
