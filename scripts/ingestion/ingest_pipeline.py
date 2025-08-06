@@ -4,7 +4,7 @@ from tqdm import tqdm
 from scripts.llm_tasks.config import CSV_PATH, DAILY_LIMIT, BACKUP_CSV_PATH
 from utils.ocr_utils import extract_text_from_images, clean_ocr_text
 from utils.parsing_utils import parse_image_paths
-from scripts.llm_tasks.llm_utils import generate_llm_response
+from scripts.llm_tasks.llm_caller import generate_llm_response
 from scripts.db_tasks.insertion import insert_notice_all
 
 def get_checkpoint_index(path: str = "data/checkpoint_index.txt") -> int:
