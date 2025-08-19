@@ -18,7 +18,7 @@ sudo snap install ngrok
 ngrok config add-authtoken <YOUR_AUTH_TOKEN>
 ```
 ## 사용 방법
-- chat_server_beta.py 실행
+- app.py 실행
 - default port 5000
 - ngrok http 5000 으로 외부 접속 주소 생성
 - 카카오 i 오픈빌더와 연동하여 챗봇 서비스 시작
