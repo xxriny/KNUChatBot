@@ -24,7 +24,7 @@ def get_db_connection():
 
 @app.route('/')
 def hello():
-    return '안녕'
+    return '테스튼'
 
 @app.route('/message', methods=['POST'])
 def message():
