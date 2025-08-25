@@ -25,7 +25,6 @@ today = datetime.today().date()
 topic = topic.replace(' ', '').lower()
 department = department.replace(' ', '').lower()
 
-
 query = """
 SELECT DISTINCT
     n.id, n.title, n.deadline, n.oneline, n.topic, n.created_at, n.url,
@@ -52,14 +51,14 @@ WHERE n.id IN (
 )
 AND REPLACE(LOWER(n.topic), ' ', '') LIKE ?
 AND (n.deadline IS NULL OR n.deadline >= ?)
-"""
 
+    """
 if sort_option == '마감순':
-    query += " ORDER BY n.deadline ASC"
+       query += " ORDER BY n.deadline ASC"
 elif sort_option == '최신순':
-    query += " ORDER BY n.created_at DESC"
+        query += " ORDER BY n.created_at DESC"
 elif sort_option == '오래된순':
-    query += " ORDER BY n.created_at ASC"
+        query += " ORDER BY n.created_at ASC"
 
 cursor.execute(query, f"%{department[:2]}%", f"%{topic}%", today)
 rows = cursor.fetchall()
