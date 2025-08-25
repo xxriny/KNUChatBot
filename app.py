@@ -14,7 +14,7 @@ DEFAULT_IMAGE = f"https://kchatsotrage.blob.core.windows.net/images/default.png"
 # DB 연결 함수
 def get_db_connection():
     return pyodbc.connect(
-        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+        f"DRIVER={{ODBC Driver 17 for SQL Server}};" 
         f"SERVER={os.getenv('DB_SERVER')};"
         f"DATABASE={os.getenv('DB_NAME')};"
         f"UID={os.getenv('DB_USER')};"
