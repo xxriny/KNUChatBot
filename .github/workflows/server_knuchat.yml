@@ -23,6 +23,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+
       - name: Zip entire repo for deployment
         run: |
           zip -r release.zip . -x ".git/*"
