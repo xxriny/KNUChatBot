@@ -41,11 +41,9 @@ jobs:
         with:
           name: python-app
 
-      # 🔹 unzip 제거
-
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: knuchat
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: release.zip   # 🔹 ZIP 그대로 배포
+          package: release.zip  
