@@ -125,27 +125,47 @@ AND (n.deadline IS NULL OR n.deadline >= ?)
             notice_id, title, deadline, one_line, topic_val, created_at, link_url, file_url, departments = row
             image_url = file_url if (file_url and str(file_url).startswith("http")) else DEFAULT_IMAGE
             deadline_text = deadline.strftime('%Y-%m-%d') if deadline else '정보 없음'
-
             cards.append({
-                "itemCard": {
-                    "imageTitle": {         # 상단 큰 타이틀 영역
-                        "title": title,
-                        "description": f"마감 {deadline_text}"
-                    },
-                    "thumbnail": {          # 우상단 썸네일 (선택)
-                        "imageUrl": image_url
-                    },
-                    "itemList": [           # 여기 항목으로 길게 넣으면 안 잘림
-                        { "title": "요약",  "description": one_line or "요약 없음" },
-                        { "title": "학과",  "description": departments or "-" },
-                        { "title": "링크",  "description": link_url }
-                    ],
-                    "itemListAlignment": "left",
-                    "buttons": [
-                        { "action": "webLink", "label": "자세히 보기", "webLinkUrl": link_url }
-                    ]
-                }
+                "imageTitle": {
+                    "title": title[:40],
+                    "description": f"마감 {deadline_text}"
+                },
+                "thumbnail": {
+                    "imageUrl": image_url,       # 썸네일 표시용
+                    "link": { "web": image_url } # 이미지 클릭 시 원본 열기
+                },
+                "itemList": [
+                    { "title": "요약", "description": (one_line or "요약 없음")[:100] },
+                    { "title": "학과", "description": (departments or "-")[:60] },
+                    { "title": "링크", "description": link_url }
+                ],
+                "itemListAlignment": "left",
+                "buttons": [
+                    { "action": "webLink", "label": "자세히 보기", "webLinkUrl": link_url }  # 사이트 URL
+                ]
             })
+
+
+            # cards.append({
+            #     "itemCard": {
+            #         "imageTitle": {         # 상단 큰 타이틀 영역
+            #             "title": title,
+            #             "description": f"마감 {deadline_text}"
+            #         },
+            #         "thumbnail": {          # 우상단 썸네일 (선택)
+            #             "imageUrl": image_url
+            #         },
+            #         "itemList": [           # 여기 항목으로 길게 넣으면 안 잘림
+            #             { "title": "요약",  "description": one_line or "요약 없음" },
+            #             { "title": "학과",  "description": departments or "-" },
+            #             { "title": "링크",  "description": link_url }
+            #         ],
+            #         "itemListAlignment": "left",
+            #         "buttons": [
+            #             { "action": "webLink", "label": "자세히 보기", "webLinkUrl": link_url }
+            #         ]
+            #     }
+            # })
 
         return jsonify({
             "version": "2.0",
