@@ -124,45 +124,34 @@ AND (n.deadline IS NULL OR n.deadline >= ?)
             image_url = file_url if (file_url and str(file_url).startswith("http")) else DEFAULT_IMAGE
             deadline_text = deadline.strftime('%Y-%m-%d') if deadline else '정보 없음'
 
-            # 필요 시 살짝만 자르기(줄 수는 클라이언트에서 자동 줄바꿈)
-            title_safe = (title or "")[:50]
-            summary_safe = (one_line or "요약 없음")[:240]  # 200~240자 정도 권장
+            title_safe   = (title or "")[:50]
+            summary_safe = (one_line or "요약 없음")[:240]  # 여러 줄 허용
 
             return {
                 "title": title_safe,
                 "description": f"마감일: {deadline_text}\n\n요약: {summary_safe}",
-                "thumbnail": {
-                    "imageUrl": image_url,
-                    "link": { "web": image_url }  # 이미지 클릭 시 원본 이미지 열기
-                },
+                "thumbnail": { "imageUrl": image_url },      # basicCard는 link 미지원
                 "buttons": [
-                    {"action": "webLink", "label": "자세히 보기", "webLinkUrl": link_url}
+                    {"action": "webLink", "label": "자세히 보기", "webLinkUrl": link_url},
+                    {"action": "webLink", "label": "이미지 보기", "webLinkUrl": image_url}
                 ]
             }
 
-        def chunk(lst, n):
-            for i in range(0, len(lst), n):
-                yield lst[i:i+n]
+        PAGE_SIZE = 3
+        page = 0
 
+        cards = [make_basiccard(r) for r in rows[:5]]  # 최대 10개 등 상한
+        start, end = page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE
+        slice_cards = cards[start:end]
 
-        cards = [make_basiccard(r) for r in rows[:10]]  # 최대 10개 등, 원하는 상한
+        outputs = [{"basicCard": c} for c in slice_cards]
 
-        outputs = []
-        if len(cards) == 1:
-            outputs.append({ "basicCard": cards[0] })
-        else:
-            for group in chunk(cards, 5):        
-                outputs.append({
-                    "carousel": {
-                        "type": "basicCard",
-                        "items": group
-                    }
-                })
+        if end < len(cards):
+            outputs.append({
+                "simpleText": {"text": f"다음 {min(PAGE_SIZE, len(cards)-end)}건 더 볼까요? '다음'이라고 입력해 주세요."}
+            })
 
-        return jsonify({
-            "version": "2.0",
-            "template": { "outputs": outputs }
-        })
+        return jsonify({"version": "2.0", "template": {"outputs": outputs}})
         # for idx, row in enumerate(rows[:5], start=1):
         #     notice_id, title, deadline, one_line, topic_val, created_at, link_url, file_url, departments = row
         #     image_url = file_url if (file_url and str(file_url).startswith("http")) else DEFAULT_IMAGE
