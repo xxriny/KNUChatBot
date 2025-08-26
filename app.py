@@ -101,7 +101,6 @@ WHERE n.id IN (
 )
 AND REPLACE(LOWER(n.topic), ' ', '') LIKE ?
 AND (n.deadline IS NULL OR n.deadline >= ?)
-
     """
     if sort_option == '마감순':
         query += " ORDER BY n.deadline ASC"
@@ -136,8 +135,6 @@ AND (n.deadline IS NULL OR n.deadline >= ?)
                 },
                 "itemList": [
                     { "title": "요약", "description": (one_line or "요약 없음")[:100] },
-                    { "title": "학과", "description": (departments or "-")[:60] },
-                    { "title": "링크", "description": link_url }
                 ],
                 "itemListAlignment": "left",
                 "buttons": [
