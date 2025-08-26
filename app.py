@@ -134,7 +134,7 @@ AND (n.deadline IS NULL OR n.deadline >= ?)
                     "link": { "web": image_url } # 이미지 클릭 시 원본 열기
                 },
                 "itemList": [
-                    { "title": "요약", "description": (one_line or "요약 없음")[:100] },
+                    { "title": "요약", "description": (one_line or "요약 없음")[:100] }
                 ],
                 "itemListAlignment": "left",
                 "buttons": [
