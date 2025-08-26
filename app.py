@@ -119,64 +119,107 @@ AND (n.deadline IS NULL OR n.deadline >= ?)
             return make_text_response(f"'{topic}, {department}' 관련 마감 기한이 지난 정보이거나 공지사항이 존재하지 않아요.")
         cards = []
         full_lines = []  # 안 쓰면 삭제해도 됨
-
-        for idx, row in enumerate(rows[:5], start=1):
-            notice_id, title, deadline, one_line, topic_val, created_at, link_url, file_url, departments = row
+        def make_basiccard(notice):
+            notice_id, title, deadline, one_line, topic_val, created_at, link_url, file_url, departments = notice
             image_url = file_url if (file_url and str(file_url).startswith("http")) else DEFAULT_IMAGE
             deadline_text = deadline.strftime('%Y-%m-%d') if deadline else '정보 없음'
-            cards.append({
-                "imageTitle": {
-                    "title": title[:40],
-                    "description": f"마감 {deadline_text}"
-                },
+
+            # 필요 시 살짝만 자르기(줄 수는 클라이언트에서 자동 줄바꿈)
+            title_safe = (title or "")[:50]
+            summary_safe = (one_line or "요약 없음")[:240]  # 200~240자 정도 권장
+
+            return {
+                "title": title_safe,
+                "description": f"마감일: {deadline_text}\n\n요약: {summary_safe}",
                 "thumbnail": {
-                    "imageUrl": image_url,       # 썸네일 표시용
-                    "link": { "web": image_url } # 이미지 클릭 시 원본 열기
+                    "imageUrl": image_url,
+                    "link": { "web": image_url }  # 이미지 클릭 시 원본 이미지 열기
                 },
-                "itemList": [
-                    { "title": "요약", "description": (one_line or "요약 없음")[:100] },
-                ],
-                "itemListAlignment": "left",
                 "buttons": [
-                    { "action": "webLink", "label": "자세히 보기", "webLinkUrl": link_url }  # 사이트 URL
+                    {"action": "webLink", "label": "자세히 보기", "webLinkUrl": link_url}
                 ]
-            })
+            }
+
+        def chunk(lst, n):
+            for i in range(0, len(lst), n):
+                yield lst[i:i+n]
 
 
-            # cards.append({
-            #     "itemCard": {
-            #         "imageTitle": {         # 상단 큰 타이틀 영역
-            #             "title": title,
-            #             "description": f"마감 {deadline_text}"
-            #         },
-            #         "thumbnail": {          # 우상단 썸네일 (선택)
-            #             "imageUrl": image_url
-            #         },
-            #         "itemList": [           # 여기 항목으로 길게 넣으면 안 잘림
-            #             { "title": "요약",  "description": one_line or "요약 없음" },
-            #             { "title": "학과",  "description": departments or "-" },
-            #             { "title": "링크",  "description": link_url }
-            #         ],
-            #         "itemListAlignment": "left",
-            #         "buttons": [
-            #             { "action": "webLink", "label": "자세히 보기", "webLinkUrl": link_url }
-            #         ]
-            #     }
-            # })
+        cards = [make_basiccard(r) for r in rows[:10]]  # 최대 10개 등, 원하는 상한
+
+        outputs = []
+        if len(cards) == 1:
+            outputs.append({ "basicCard": cards[0] })
+        else:
+            for group in chunk(cards, 5):        
+                outputs.append({
+                    "carousel": {
+                        "type": "basicCard",
+                        "items": group
+                    }
+                })
 
         return jsonify({
             "version": "2.0",
-            "template": {
-                "outputs": [
-                    {
-                        "carousel": {
-                            "type": "itemCard",
-                            "items": cards
-                        }
-                    }
-                ]
-            }
+            "template": { "outputs": outputs }
         })
+        # for idx, row in enumerate(rows[:5], start=1):
+        #     notice_id, title, deadline, one_line, topic_val, created_at, link_url, file_url, departments = row
+        #     image_url = file_url if (file_url and str(file_url).startswith("http")) else DEFAULT_IMAGE
+        #     deadline_text = deadline.strftime('%Y-%m-%d') if deadline else '정보 없음'
+        #     cards.append({
+        #         "imageTitle": {
+        #             "title": title[:40],
+        #             "description": f"마감 {deadline_text}"
+        #         },
+        #         "thumbnail": {
+        #             "imageUrl": image_url,       # 썸네일 표시용
+        #             "link": { "web": image_url } # 이미지 클릭 시 원본 열기
+        #         },
+        #         "itemList": [
+        #             { "title": "요약", "description": (one_line or "요약 없음")[:100] },
+        #         ],
+        #         "itemListAlignment": "left",
+        #         "buttons": [
+        #             { "action": "webLink", "label": "자세히 보기", "webLinkUrl": link_url }  # 사이트 URL
+        #         ]
+        #     })
+
+
+        #     # cards.append({
+        #     #     "itemCard": {
+        #     #         "imageTitle": {         # 상단 큰 타이틀 영역
+        #     #             "title": title,
+        #     #             "description": f"마감 {deadline_text}"
+        #     #         },
+        #     #         "thumbnail": {          # 우상단 썸네일 (선택)
+        #     #             "imageUrl": image_url
+        #     #         },
+        #     #         "itemList": [           # 여기 항목으로 길게 넣으면 안 잘림
+        #     #             { "title": "요약",  "description": one_line or "요약 없음" },
+        #     #             { "title": "학과",  "description": departments or "-" },
+        #     #             { "title": "링크",  "description": link_url }
+        #     #         ],
+        #     #         "itemListAlignment": "left",
+        #     #         "buttons": [
+        #     #             { "action": "webLink", "label": "자세히 보기", "webLinkUrl": link_url }
+        #     #         ]
+        #     #     }
+        #     # })
+
+        # return jsonify({
+        #     "version": "2.0",
+        #     "template": {
+        #         "outputs": [
+        #             {
+        #                 "carousel": {
+        #                     "type": "itemCard",
+        #                     "items": cards
+        #                 }
+        #             }
+        #         ]
+        #     }
+        # })
     finally:
         cursor.close()
         conn.close()
