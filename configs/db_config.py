@@ -1,12 +1,13 @@
-import os
 from dotenv import load_dotenv
+import os
+
 load_dotenv()
 
-DB_CONN_STR = (
-    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-    f"SERVER={os.getenv('DB_SERVER')};"
-    f"DATABASE={os.getenv('DB_NAME')};"
-    f"UID={os.getenv('DB_USER')};"
-    f"PWD={os.getenv('DB_PASSWORD')};"
-    f"Encrypt=no;"
-)
+# DB 설정 불러오기
+DB_CONFIG = {
+    'host': os.getenv("DB_SERVER"),
+    'port': int(os.getenv("DB_PORT", 1433)),  # 기본값 1433
+    'user': os.getenv("DB_USER"),
+    'password': os.getenv("DB_PASSWORD"),
+    'database': os.getenv("DB_NAME"),
+}
