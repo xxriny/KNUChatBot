@@ -33,10 +33,10 @@ def append_to_backup_csv(parsed_data: dict, path: str = BACKUP_CSV_PATH):
 
 def run_ingestion():
     start_idx = get_checkpoint_index()
-    logger.info("[INGEST] 시작 index=%s, daily_limit=%s", start_idx, DAILY_LIMIT)
+    logger.info("[NOTICE_INGEST] 시작 index=%s, daily_limit=%s", start_idx, DAILY_LIMIT)
 
     
-    df = load_notices_df_from_blob(encoding="utf-8")
+    df = load_notices_df_from_blob(blob_name="kangwon_notices.csv",encoding="utf-8")
     
     df["작성일"] = pd.to_datetime(df["작성일"], errors="coerce") # 작성일을 datetime으로 변환 후 최신순 정렬
     df = df.sort_values(by="작성일", ascending=False).reset_index(drop=True)
