@@ -13,7 +13,7 @@ utils/db_utils.py
 
 from configs.db_config import DB_CONFIG
 import pyodbc
-from utils.log_utils import (
+from scripts.utils.log_utils import (
     init_runtime_logger,
     capture_unhandled_exception,
 )

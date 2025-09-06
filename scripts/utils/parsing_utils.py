@@ -12,7 +12,7 @@ LLM 전처리나 CSV 파싱 시 반복되는 문자열 처리 작업을 효율�
 import pandas as pd
 import ast
 import numpy as np
-from utils.log_utils import init_runtime_logger, capture_unhandled_exception
+from scripts.utils.log_utils import init_runtime_logger, capture_unhandled_exception
 
 logger = init_runtime_logger()
 
