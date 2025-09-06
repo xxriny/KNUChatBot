@@ -1,8 +1,9 @@
+from google.genai import types
+import re, json
 from scripts.llm_tasks.prompt_template import TEST_PROMPT_KR
 from scripts.llm_tasks.api_client import CLIENT, MODEL_ID
 from scripts.llm_tasks.exceptions import LLMCallError, LLMTimeoutError, LLMParseError
-import re, json
-from utils.log_utils import init_runtime_logger, capture_unhandled_exception
+from scripts.utils.log_utils import init_runtime_logger, capture_unhandled_exception
 
 
 
@@ -33,7 +34,9 @@ def generate_llm_response(title: str, body: str, ocr_text: str) -> dict:
         response = CLIENT.models.generate_content(
             model=MODEL_ID,
             contents=[prompt],
-            generation_config={"response_mime_type": "application/json"},  # 있으면 사용
+            config = types.GenerateContentConfig(
+                response_mime_type='application/json',
+             ),
         )
     except TypeError:
         response = CLIENT.models.generate_content(  # 없으면 폴백

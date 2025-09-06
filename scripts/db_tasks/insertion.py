@@ -1,16 +1,14 @@
 from typing import Optional
-import numpy as np
-from utils.db_utils import insert_and_return_id, insert_data
-from utils.parsing_utils import parse_image_paths, parse_department
-from utils.key_utils import normalize_url, sha256_hex
-from utils.log_utils import init_runtime_logger, capture_unhandled_exception
-from utils.db_utils import get_connection
 import pandas as pd
+from scripts.utils.db_utils import insert_and_return_id, insert_data
+from scripts.utils.parsing_utils import parse_image_paths, parse_department
+from scripts.utils.key_utils import normalize_url, sha256_hex
+from scripts.utils.log_utils import init_runtime_logger, capture_unhandled_exception
+from scripts.utils.db_utils import get_connection
 from scripts.db_tasks.notice_repo import(
     upsert_notice_keys, apply_llm_result,
     add_departments, add_attachments, upsert_ocr_text
 )
-import time
 
 logger = init_runtime_logger()
 
