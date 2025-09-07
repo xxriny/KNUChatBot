@@ -1,27 +1,25 @@
 import re
-import requests
 from io import BytesIO
 from dotenv import load_dotenv
-import urllib.parse
 import os
 import time
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
 from azure.cognitiveservices.vision.computervision.models import OperationStatusCodes
 from msrest.exceptions import HttpOperationError
 from msrest.authentication import CognitiveServicesCredentials
-from utils.log_utils import (
+from scripts.utils.log_utils import (
     PHASE, init_runtime_logger, capture_exception,
     capture_unhandled_exception, append_failed_index,
     extract_azure_error_fields
 )
-from utils.throttle_utils import TokenBucket
-from utils.retry_utils import (
+from scripts.utils.throttle_utils import TokenBucket
+from scripts.utils.retry_utils import (
     retry_with_backoff,
     is_retryable_http_error, 
     parse_retry_after,
     jitter
 )
-from utils.image_guard import ensure_ocr_safe_bytes
+from scripts.utils.image_guard import ensure_ocr_safe_bytes
 
 load_dotenv()
 subscription_key = os.getenv("VISION_KEY")

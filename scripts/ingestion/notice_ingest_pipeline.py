@@ -1,15 +1,16 @@
 import pandas as pd
 import os
 from tqdm import tqdm
-from scripts.llm_tasks.config import CSV_PATH, DAILY_LIMIT, BACKUP_CSV_PATH
-from utils.ocr_utils import extract_text_from_images, clean_ocr_text
-from utils.parsing_utils import parse_image_paths
+from scripts.configs.config import DAILY_LIMIT, BACKUP_CSV_PATH
+from scripts.utils.blob_utils import load_notices_df_from_blob
+from scripts.utils.ocr_utils import extract_text_from_images, clean_ocr_text
+from scripts.utils.parsing_utils import parse_image_paths
 from scripts.llm_tasks.llm_caller import generate_llm_response
-from utils.key_utils import normalize_url, sha256_hex
+from scripts.utils.key_utils import normalize_url, sha256_hex
 from scripts.db_tasks.insertion import insert_notice_all
 from scripts.db_tasks.notice_repo import get_llm_status, upsert_notice_keys, mark_failed
-from utils.log_utils import init_runtime_logger, capture_unhandled_exception
-from utils.db_utils import get_connection
+from scripts.utils.log_utils import init_runtime_logger, capture_unhandled_exception
+from scripts.utils.db_utils import get_connection
 
 logger = init_runtime_logger()
 
@@ -32,9 +33,11 @@ def append_to_backup_csv(parsed_data: dict, path: str = BACKUP_CSV_PATH):
 
 def run_ingestion():
     start_idx = get_checkpoint_index()
-    logger.info("[INGEST] 시작 index=%s, daily_limit=%s", start_idx, DAILY_LIMIT)
+    logger.info("[NOTICE_INGEST] 시작 index=%s, daily_limit=%s", start_idx, DAILY_LIMIT)
 
-    df = pd.read_csv(CSV_PATH, encoding="utf-8")
+    
+    df = load_notices_df_from_blob(blob_name="kangwon_notices.csv",encoding="utf-8")
+    
     df["작성일"] = pd.to_datetime(df["작성일"], errors="coerce") # 작성일을 datetime으로 변환 후 최신순 정렬
     df = df.sort_values(by="작성일", ascending=False).reset_index(drop=True)
     

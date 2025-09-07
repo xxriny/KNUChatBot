@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Optional, Tuple, Iterable
 import pyodbc
 
-from utils.db_utils import get_connection
-from utils.log_utils import init_runtime_logger
+from scripts.utils.db_utils import get_connection
+from scripts.utils.log_utils import init_runtime_logger
 
 logger = init_runtime_logger()
 
