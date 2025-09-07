@@ -1,12 +1,12 @@
 import re
-from io import BytesIO
+from typing import List
 from dotenv import load_dotenv
 import os
-import time
-from azure.cognitiveservices.vision.computervision import ComputerVisionClient
-from azure.cognitiveservices.vision.computervision.models import OperationStatusCodes
-from msrest.exceptions import HttpOperationError
-from msrest.authentication import CognitiveServicesCredentials
+from azure.ai.vision.imageanalysis import ImageAnalysisClient
+from azure.ai.vision.imageanalysis.models import VisualFeatures
+from azure.core.credentials import AzureKeyCredential
+from azure.core.exceptions import HttpResponseError
+
 from scripts.utils.log_utils import (
     PHASE, init_runtime_logger, capture_exception,
     capture_unhandled_exception, append_failed_index,
@@ -22,123 +22,91 @@ from scripts.utils.retry_utils import (
 from scripts.utils.image_guard import ensure_ocr_safe_bytes
 
 load_dotenv()
-subscription_key = os.getenv("VISION_KEY")
+key = os.getenv("VISION_KEY")
 endpoint = os.getenv("VISION_ENDPOINT")
-computervision_client = ComputerVisionClient(endpoint, CognitiveServicesCredentials(subscription_key))
-
+computervision_client = ImageAnalysisClient(endpoint=endpoint,credential=AzureKeyCredential(key))
 logger = init_runtime_logger()
 
 # 무료(F0): 2초당 1건 수준이 안전 → rate=0.5, burst=1 권장
 GLOBAL_BUCKET = TokenBucket(rate_per_sec=0.5, capacity=1)
 
-def _cv_read_once(url_or_stream, use_stream: bool):
-    """한 번의 Read 호출. 호출 직전에 전역 레이트 리미터로 속도 제한."""
-    GLOBAL_BUCKET.acquire() # 전역 QPS 캡
-    if use_stream:
-        return computervision_client.read_in_stream(url_or_stream, raw=True)
-    else:
-        return computervision_client.read(url_or_stream, raw=True)
+def _analyze_read_bytes(image_bytes: bytes):
+    """
+    Image Analysis v4는 READ가 **동기**로 동작함.
+    비동기 폴링 불필요. 실패 시 HttpResponseError 발생.
+    """
+    GLOBAL_BUCKET.acquire()  # 전역 QPS 제한
+    return computervision_client.analyze(
+        image_data=image_bytes,
+        visual_features=[VisualFeatures.READ]
+    )
     
-def _cv_read_with_retry(url_or_stream, use_stream:bool):
+def _safe_read_once(image_bytes: bytes):
     """
-    retry_utils.py의 retry_with_backoff로 감싼 안전 호출
-    429/5xx만 자동 재시도
+    재시도 래핑: 429/5xx에 대해서만 backoff 재시도.
     """
-
     def _call():
-        return _cv_read_once(url_or_stream, use_stream)
-    
+        return _analyze_read_bytes(image_bytes)
     safe_call = retry_with_backoff(
         func=_call,
         should_retry=is_retryable_http_error,
         base=2.0, factor=2.0, max_delay=32.0, max_retries=5,
-        jitter_ratio=0.2
+        jitter_ratio=0.2,
     )
     return safe_call()
 
-def _poll_read_result_with_backoff(operation_id: str, max_wait_s: float = 120.0):
+def _flatten_read_result_text(result) -> List[str]:
     """
-    v3.2 비동기 폴링 최적화:
-    - 처음 1초, 이후 2→3→4→5초(상한 5초)로 점진 증가 → 폴링 호출 수 절감
-    - 폴링도 API 호출이므로 GLOBAL_BUCKET로 QPS 제한
-    - 429 발생 시 Retry-After 우선, 없으면 현재 delay에 지터 넣어 대기
+    v4 결과 파싱: blocks -> lines -> words
     """
-    delay = 1.0   # 시작 1초
-    waited = 0.0
-    while True:
-        try:
-            GLOBAL_BUCKET.acquire()
-            read_result = computervision_client.get_read_result(operation_id)
-
-            if read_result.status not in ['notStarted', 'running']:
-                return read_result  # succeeded/failed 중 하나면 종료
-
-            # 아직 처리 중 → 점진 대기 (최대 5초)
-            sleep_s = min(delay, 5.0)
-            time.sleep(jitter(sleep_s, 0.2))
-            waited += sleep_s
-            delay = min(delay + 1.0, 5.0)
-
-            if waited >= max_wait_s:
-                return read_result  # 타임아웃 성격으로 상태 반환
-
-        except HttpOperationError as e:
-            status = getattr(getattr(e, 'response', None), 'status_code', None)
-            if status == 429:
-                # Retry-After 헤더 우선, 없으면 현재 delay 사용
-                headers = getattr(getattr(e, "response", None), "headers", None)
-                ra = parse_retry_after(headers) if headers else None
-                sleep_s = ra if ra is not None else delay
-                time.sleep(jitter(sleep_s, 0.2))
-                # 다음 루프에서 다시 폴링(필요시 delay를 조금 늘릴 수도 있음)
-                delay = min(max(delay, 2.0) * 1.5, 8.0)
-                continue
-            else:
-                raise
+    texts: List[str] = []
+    if not getattr(result, "read", None) or not getattr(result.read, "blocks", None):
+        return texts
+    for block in result.read.blocks:
+        for line in getattr(block, "lines", []) or []:
+            words = [w.text for w in getattr(line, "words", []) or []]
+            line_text = " ".join(words).strip()
+            if line_text:
+                texts.append(line_text)
+    return texts
 
 
-def extract_text_from_images(image_urls: list[str], use_stream: bool = False) -> str:
+def extract_text_from_images(image_urls: list[str]) -> str:
+    """
+    여러 이미지 URL에 대해 OCR 수행.
+    - 각 URL은 ensure_ocr_safe_bytes로 다운로드/크기제한/포맷보정 후 bytes로 분석
+    - 개별 실패는 기록하고 넘어감(파이프라인 지속)
+    """
     ocr_texts = []
 
-    for idx, url in enumerate(image_urls):
+    for idx, url in enumerate(image_urls or []):
         try:
-            # --- 입력 준비: 전처리 가드 적용 ---
-            safe_bytes, safe_type = ensure_ocr_safe_bytes(url)
-            url_or_stream = BytesIO(safe_bytes)   # 항상 바이트 스트림으로 OCR 호출
-            use_stream = True                     # 강제로 stream 모드 사용
-            
-            # --- Read 호출 “레이트 리미터 + 재시도” 로 감싸기 ---
-            read_response = _cv_read_with_retry(url_or_stream, use_stream=use_stream)
+            # 입력 준비: 안전 바이트로 변환(용량/모드 보정)
+            safe_bytes, _ctype = ensure_ocr_safe_bytes(url)
 
-            read_operation_location = read_response.headers.get("Operation-Location")
-            if not read_operation_location:
-                raise RuntimeError("Missing Operation-Location")
-            operation_id = read_operation_location.split("/")[-1]
+            # READ 호출 (동기) + 재시도
+            result = _safe_read_once(safe_bytes)
 
-            # --- 폴링 최적화 + 429 대응 ---
-            read_result = _poll_read_result_with_backoff(operation_id, max_wait_s=120.0)
+            # 텍스트 플래튼
+            lines = _flatten_read_result_text(result)
+            if not lines:
+                # 성공이지만 텍스트가 없을 수 있음 → 경고 로그만
+                logger.warning(f"[OCR EMPTY] idx={idx} url={url}")
+            ocr_texts.extend(lines)
 
-            if read_result.status == OperationStatusCodes.succeeded:
-                for text_result in read_result.analyze_result.read_results:
-                    for line in text_result.lines:
-                        ocr_texts.append(line.text.strip())
-            else:
-                capture_exception(
-                    index=idx, phase=PHASE["OCR"], url=url,
-                    message=f"OCR polling ended with status={read_result.status}"
-                )
-                append_failed_index(idx)
-                logger.warning(f"OCR failed @idx={idx}, status={read_result.status}")
-                print(f"[OCR FAILED] {url} - Status: {read_result.status}")
-
-        except HttpOperationError as e:
-            status = getattr(getattr(e, 'response', None), 'status_code', None)
-            body = None
+        except HttpResponseError as e:
+            # Azure SDK 공통 예외 → 상태/본문 파싱
+            status = getattr(e, "status_code", None)
+            body = getattr(e, "message", None)
+            # 일부 경우 e.response.text가 있을 수 있음
             try:
-                body_attr = getattr(getattr(e, 'response', None), 'text', None)
-                body = body_attr() if callable(body_attr) else body_attr
+                resp = getattr(e, "response", None)
+                if resp is not None:
+                    txt = getattr(resp, "text", None)
+                    body = txt() if callable(txt) else (txt or body)
             except Exception:
                 pass
+
             code, msg = extract_azure_error_fields(body)
             capture_exception(
                 index=idx, phase=PHASE["OCR"], url=url,
@@ -147,6 +115,7 @@ def extract_text_from_images(image_urls: list[str], use_stream: bool = False) ->
             )
             append_failed_index(idx)
             logger.error(f"OCR HttpError @idx={idx} status={status} code={code} msg={msg}")
+
         except Exception as e:
             capture_unhandled_exception(index=idx, phase=PHASE["OCR"], url=url, exc=e)
             append_failed_index(idx)
