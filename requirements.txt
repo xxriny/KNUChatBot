@@ -18,3 +18,4 @@ pyodbc
 scikit-learn
 numpy
 azure-storage-blob
+azure-cognitiveservices-vision-computervision==0.9.0
