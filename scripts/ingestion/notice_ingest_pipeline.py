@@ -1,7 +1,7 @@
 import pandas as pd
 import os
 from tqdm import tqdm
-from scripts.configs.config import DAILY_LIMIT, BACKUP_CSV_PATH
+from configs.config import DAILY_LIMIT, BACKUP_CSV_PATH
 from scripts.utils.blob_utils import load_notices_df_from_blob
 from scripts.utils.ocr_utils import extract_text_from_images, clean_ocr_text
 from scripts.utils.parsing_utils import parse_image_paths
@@ -13,6 +13,8 @@ from scripts.utils.log_utils import init_runtime_logger, capture_unhandled_excep
 from scripts.utils.db_utils import get_connection
 
 logger = init_runtime_logger()
+DAILY_LIMIT = 200
+BACKUP_CSV_PATH = "data/llm_backup_results.csv"
 
 def get_checkpoint_index(path: str = "data/checkpoint_index.txt") -> int:
     if os.path.exists(path):
