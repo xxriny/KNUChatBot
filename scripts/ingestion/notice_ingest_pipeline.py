@@ -1,7 +1,6 @@
 import pandas as pd
 import os
 from tqdm import tqdm
-from configs.config import DAILY_LIMIT, BACKUP_CSV_PATH
 from scripts.utils.blob_utils import load_notices_df_from_blob
 from scripts.utils.ocr_utils import extract_text_from_images, clean_ocr_text
 from scripts.utils.parsing_utils import parse_image_paths
