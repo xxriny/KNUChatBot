@@ -1,7 +1,7 @@
 import io
 import pandas as pd
 from azure.storage.blob import BlobClient
-from scripts.configs.storage_config import get_blob_config
+from configs.storage_config import get_blob_config
 
 def load_notices_df_from_blob(blob_name:str, encoding: str = "utf-8") -> pd.DataFrame:
     cfg = get_blob_config()
