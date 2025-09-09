@@ -2,30 +2,29 @@ Flask==2.2.5
 Werkzeug==2.2.3
 beautifulsoup4==4.13.4
 pandas==2.3.1
+numpy==2.3.2
+scikit-learn==1.5.2
+pyodbc==5.2.0
 Pillow==11.3.0
 pytesseract==0.3.13
 python-dotenv==1.1.1
 requests==2.32.4
 tqdm==4.67.1
-urllib3==1.26.11
+urllib3==1.26.18
 gunicorn==20.1.0
 wcwidth==0.2.13
 webdriver-manager==4.0.2
 websocket-client==1.8.0
 wsproto==1.2.0
-xgboost==3.0.0
-pyodbc
-scikit-learn
-numpy
+xgboost==2.0.3    
+
+azure-storage-blob==12.26.0
+azure-cognitiveservices-vision-computervision>=0.7.0,<1.0.0
+msrest>=0.7.1,<1.0.0
+azure-common>=1.1.28,<2.0.0
 
 # --- Google Generative AI ---
-google-genai>=1.0.0
-google-auth>=2.30.0
-google-api-core>=2.20.0
-googleapis-common-protos
-
-# --- Azure  ---
-azure-ai-vision-imageanalysis>=1.0.0
-azure-core>=1.35.0
-azure-storage-blob==12.26.0
-azure-cognitiveservices-vision-computervision>=0.7.0
+# google-genai>=1.0.0
+# google-auth>=2.30.0
+# google-api-core>=2.20.0
+# googleapis-common-protos
