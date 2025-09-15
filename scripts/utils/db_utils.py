@@ -12,7 +12,7 @@ utils/db_utils.py
 """
 
 from configs.db_config import DB_CONFIG
-import pyodbc
+import pyodbc, time
 from scripts.utils.log_utils import (
     init_runtime_logger,
     capture_unhandled_exception,
@@ -20,25 +20,52 @@ from scripts.utils.log_utils import (
 
 logger = init_runtime_logger()
 
-def get_connection():
+def _mask(s: str) -> str:
+    return s[:2] + "****" if s else s
+
+def get_connection(retries: int = 3) -> pyodbc.Connection:
     """
     DB 연결 객체 반환
     
     Returns: 
         pyodbc.Connection: DB 연결 객체
     """
-    conn_str = (
-        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-        f"SERVER={DB_CONFIG['host']}, {DB_CONFIG['port']};"
-        f"DATABASE={DB_CONFIG['database']};"
-        f"UID={DB_CONFIG['user']};"
-        f"PWD={DB_CONFIG['password']}"
-    )
-        # 연결 시도 로그 (DEBUG 수위)
-    logger.debug("[DB] connecting to %s:%s / db=%s",
-                 DB_CONFIG.get('host'), DB_CONFIG.get('port'), DB_CONFIG.get('database'))
+
+    host   = DB_CONFIG["host"]
+    port   = DB_CONFIG["port"]
+    db     = DB_CONFIG["database"]
+    user   = DB_CONFIG["user"]
+    pwd    = DB_CONFIG["password"]
+
+    server = f"tcp:{host},{port}"
     
-    return pyodbc.connect(conn_str)
+    conn_str = (
+        "DRIVER={ODBC Driver 18 for SQL Server};"
+        f"SERVER={server};"
+        f"DATABASE={db};"
+        f"UID={user};"
+        f"PWD={pwd};"
+        "Encrypt=Yes;"
+        "TrustServerCertificate=Yes;"   # ← 임시로 검증 생략해서 먼저 연결 확인
+        "Connection Timeout=15;"
+        "LoginTimeout=15;"
+    )
+
+    last_err = None
+    for i in range(retries):
+        try:
+            logger.debug("[DB] connecting to %s / db=%s (user=%s)",
+                         server, db, _mask(user))
+            return pyodbc.connect(conn_str)
+        except pyodbc.Error as e:
+            last_err = e
+            wait = 2 ** i
+            logger.warning("[DB] connect failed (try=%d) -> %s; retry in %ss",
+                           i+1, e, wait)
+            time.sleep(wait)
+    # 재시도 후에도 실패
+    logger.error("[DB] connect permanently failed: %s", last_err)
+    raise last_err
 
 def insert_and_return_id(table_name, columns, values):
     """
