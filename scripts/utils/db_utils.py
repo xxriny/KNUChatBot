@@ -10,15 +10,20 @@ utils/db_utils.py
 
 다양한 스크립트에서 공통적으로 사용하는 DB 연동 코드를 재사용 가능하게 정리했습니다.
 """
-
-from configs.db_config import DB_CONFIG
 import pyodbc, time
+from typing import Optional
+from configs.db_config import DB_CONFIG
 from scripts.utils.log_utils import (
     init_runtime_logger,
     capture_unhandled_exception,
 )
 
 logger = init_runtime_logger()
+
+def _maybe_open(conn: Optional[pyodbc.Connection]):
+    if conn is not None:
+        return conn, False
+    return get_connection(), True
 
 def _mask(s: str) -> str:
     return s[:2] + "****" if s else s

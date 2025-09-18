@@ -1,17 +1,10 @@
-# scripts/db_tasks/notice_repo.py
+import pyodbc
 from __future__ import annotations
 from typing import Optional, Tuple, Iterable
-import pyodbc
-
-from scripts.utils.db_utils import get_connection
+from scripts.utils.db_utils import _maybe_open
 from scripts.utils.log_utils import init_runtime_logger
 
 logger = init_runtime_logger()
-
-def _maybe_open(conn: Optional[pyodbc.Connection]):
-    if conn is not None:
-        return conn, False
-    return get_connection(), True
 
 # 1) 공지사항 테이블에서 url_hash 기준으로 upsert (insert or update)
 def upsert_notice_keys(conn: Optional[pyodbc.Connection], title: str, url: str, url_hash: str) -> Tuple[int, bool]:
