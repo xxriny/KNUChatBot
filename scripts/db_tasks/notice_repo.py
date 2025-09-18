@@ -1,7 +1,6 @@
 import pyodbc
-from __future__ import annotations
 from typing import Optional, Tuple, Iterable
-from scripts.utils.db_utils import _maybe_open
+from scripts.utils.db_utils import maybe_open
 from scripts.utils.log_utils import init_runtime_logger
 
 logger = init_runtime_logger()
@@ -21,7 +20,7 @@ def upsert_notice_keys(conn: Optional[pyodbc.Connection], title: str, url: str, 
         url   = COALESCE(NULLIF(LTRIM(RTRIM(?)), ''), t.url)
     OUTPUT inserted.id, $action;
     """
-    c, close_after = _maybe_open(conn) # 연결 준비
+    c, close_after = maybe_open(conn) # 연결 준비
     try:
         cur = c.cursor()
         cur.execute(sql, (url_hash, title, url, url_hash, title, url))  #url_hash: MERGE source / title, url, url_hash: INSERT 값 / title, url: UPDATE 값
@@ -33,7 +32,7 @@ def upsert_notice_keys(conn: Optional[pyodbc.Connection], title: str, url: str, 
 
 # 2) 공지(notice)의 LLM 처리 상태(llm_status)를 조회하는 함수
 def get_llm_status(conn: Optional[pyodbc.Connection], notice_id: int) -> Optional[int]:
-    c, close_after = _maybe_open(conn)
+    c, close_after = maybe_open(conn)
     try:
         cur = c.cursor()
         cur.execute("SELECT llm_status FROM dbo.notice WHERE id = ?;", (notice_id,))
@@ -53,7 +52,7 @@ def apply_llm_result(conn: Optional[pyodbc.Connection], notice_id: int,
         title = COALESCE(NULLIF(LTRIM(RTRIM(?)), ''), title)
     WHERE id = ?;
     """
-    c, close_after = _maybe_open(conn)
+    c, close_after = maybe_open(conn)
     try:
         cur = c.cursor()
         cur.execute(sql, (topic, oneline, deadline, new_title, notice_id))
@@ -64,7 +63,7 @@ def apply_llm_result(conn: Optional[pyodbc.Connection], notice_id: int,
 # 4) 실패/재처리 마킹
 def mark_failed(conn: Optional[pyodbc.Connection], notice_id: int, to_retry_queue: bool=False) -> None:
     st = 3 if to_retry_queue else 2
-    c, close_after = _maybe_open(conn)
+    c, close_after = maybe_open(conn)
     try:
         cur = c.cursor()
         cur.execute("UPDATE dbo.notice SET llm_status = ? WHERE id = ?;", (st, notice_id))
@@ -74,7 +73,7 @@ def mark_failed(conn: Optional[pyodbc.Connection], notice_id: int, to_retry_queu
 
 # 5) 부서(다대다) — 중복 방지 삽입
 def add_departments(conn: Optional[pyodbc.Connection], notice_id: int, departments: Iterable[str]) -> None:
-    c, close_after = _maybe_open(conn)
+    c, close_after = maybe_open(conn)
     try:
         cur = c.cursor()
         for d in departments or []:
@@ -93,7 +92,7 @@ def add_departments(conn: Optional[pyodbc.Connection], notice_id: int, departmen
 
 # 6) 첨부(1:N) — 중복 방지 삽입 (URL 기준)
 def add_attachments(conn: Optional[pyodbc.Connection], notice_id: int, image_urls: Iterable[str]) -> None:
-    c, close_after = _maybe_open(conn)
+    c, close_after = maybe_open(conn)
     try:
         cur = c.cursor()
         for order, url in enumerate(image_urls or []):
@@ -115,7 +114,7 @@ def add_attachments(conn: Optional[pyodbc.Connection], notice_id: int, image_url
 def upsert_ocr_text(conn: Optional[pyodbc.Connection], notice_id: int, ocr_text: str) -> None:
     text = (ocr_text or "").strip()
     if not text: return
-    c, close_after = _maybe_open(conn)
+    c, close_after = maybe_open(conn)
     try:
         cur = c.cursor()
         cur.execute("""
