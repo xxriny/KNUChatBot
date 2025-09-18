@@ -1,6 +1,7 @@
 import pandas as pd
 import os
 from tqdm import tqdm
+from scripts.db_tasks.ingestion_state_repo import fetch_last_published_at, update_last_published_at, to_utc_naive
 from scripts.utils.blob_utils import load_notices_df_from_blob
 from scripts.utils.ocr_utils import extract_text_from_images, clean_ocr_text
 from scripts.utils.parsing_utils import parse_image_paths
@@ -12,18 +13,9 @@ from scripts.utils.log_utils import init_runtime_logger, capture_unhandled_excep
 from scripts.utils.db_utils import get_connection
 
 logger = init_runtime_logger()
-DAILY_LIMIT = 200
+DAILY_LIMIT = 230
+LOOKBACK_DAYS = 1
 BACKUP_CSV_PATH = "data/llm_backup_results.csv"
-
-def get_checkpoint_index(path: str = "data/checkpoint_index.txt") -> int:
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            return int(f.read().strip())
-    return 0 # 처음 시작할 경우
-
-def save_checkpoint_index(index: int, path:str = "data/checkpoint_index.txt"):
-    with open(path, "w") as f:
-        f.write(str(index))
 
 def append_to_backup_csv(parsed_data: dict, path: str = BACKUP_CSV_PATH):
     df_row = pd.DataFrame([parsed_data])
@@ -33,27 +25,38 @@ def append_to_backup_csv(parsed_data: dict, path: str = BACKUP_CSV_PATH):
         df_row.to_csv(path, mode="a", index=False, header=False, encoding="utf-8-sig")
 
 def run_ingestion():
-    start_idx = get_checkpoint_index()
-    logger.info("[NOTICE_INGEST] 시작 index=%s, daily_limit=%s", start_idx, DAILY_LIMIT)
+    conn = get_connection()
 
-    
-    df = load_notices_df_from_blob(blob_name="kangwon_notices.csv",encoding="utf-8")
-    
-    df["작성일"] = pd.to_datetime(df["작성일"], errors="coerce") # 작성일을 datetime으로 변환 후 최신순 정렬
-    df = df.sort_values(by="작성일", ascending=False).reset_index(drop=True)
-    
-    # 읽기는 여유 있게, 실제 LLM 호출은 DAILY_LIMIT로 제어
-    df = df.iloc[start_idx : start_idx + (DAILY_LIMIT * 3)]
+     # --- CSV 로드 및 '작성일' 표준화 ---
+    df = load_notices_df_from_blob(blob_name="kangwon_notices.csv", encoding="utf-8")
+    df["작성일"] = pd.to_datetime(df["작성일"], errors="coerce")
+
+    # 작성일이 tz 없는 KST 로컬 시각이라고 가정 → KST 부여 → UTC로 변환 → tz 제거
+    if getattr(df["작성일"].dt, "tz", None) is None:
+        df["작성일"] = (df["작성일"]
+                        .dt.tz_localize("Asia/Seoul")
+                        .dt.tz_convert("UTC")
+                        .dt.tz_localize(None))
+    else:
+        df["작성일"] = (df["작성일"]
+                        .dt.tz_convert("UTC")
+                        .dt.tz_localize(None))
+        
+    # --- 워터마크 조회 & cutoff 계산 ---
+    last_ts = fetch_last_published_at(conn)          # DB에서 읽은 시각
+    last_ts = to_utc_naive(pd.to_datetime(last_ts)) # DB 값도 UTC-naive로 강제 정규화
+    cutoff = last_ts - pd.Timedelta(days=LOOKBACK_DAYS)
+    logger.info("[NOTICE_INGEST] last=%s, cutoff=%s, daily_limit=%s", last_ts, cutoff, DAILY_LIMIT)
+
+    df = df[df["작성일"] >= cutoff].sort_values(by="작성일", ascending=True).reset_index(drop=True)
     logger.info("[INGEST] 후보 행 수=%s", len(df))
 
     llm_calls = 0
-    conn = get_connection()
+    max_processed = last_ts  # 이번 배치에서 처리된 최신 작성일
 
-    for i, row in tqdm(df.iterrows(), total=len(df), desc="Ingestion 진행"):
-            current_idx = start_idx + i
+    # --- ingestion loop ---
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Ingestion 진행"):
             try:
-                save_checkpoint_index(current_idx + 1)
-
                 title = str(row.get("제목", "") or "")
                 body = str(row.get("본문내용", "") or "")
                 url = str(row.get("링크", "") or "")
@@ -73,6 +76,7 @@ def run_ingestion():
                 if llm_calls >= DAILY_LIMIT:
                     logger.info("[STOP] 일일 LLM 한도 도달: %s", llm_calls)
                     break
+                llm_calls += 1
 
                 # 4) OCR 준비
                 if image_paths_str.lower() == "nan" or not image_paths_str:
@@ -93,8 +97,15 @@ def run_ingestion():
                 
                 # --- DB 삽입 ---
                 insert_notice_all(parsed, conn=conn)
-                llm_calls += 1
-                logger.info("[✔] index=%s ingestion 성공 - title=%s", current_idx, parsed.get("title"))
+                logger.info("[✔] ingestion 성공 - title=%s", parsed.get("title"))
+
+                # --- 워터마크 후보 갱신 ---
+                if pd.notna(row["작성일"]) and row["작성일"] > max_processed:
+                    logger.debug(
+                        "[WATERMARK] 갱신됨: old=%s → new=%s (row_title=%s)",
+                        max_processed, row["작성일"], row.get("제목", "N/A")
+                    )
+                    max_processed = row["작성일"]
 
             except Exception as e:
                 # 실패: 상태 마킹(2) 후 로깅
@@ -103,16 +114,20 @@ def run_ingestion():
                         mark_failed(None, notice_id)
                 except Exception:
                     pass
+
                 capture_unhandled_exception(
-                    index=current_idx,
+                    index=None,
                     phase="INGEST",
                     url=row.get("링크", None),
                     exc=e,
                     extra={"title": row.get("제목", "")}
                 )
-                logger.error("[X] index=%s ingestion 실패 - title=%s - error=%s",
-                            current_idx, row.get("제목", ""), str(e))
+                logger.error("[X] ingestion 실패 - title=%s - error=%s", row.get("제목", ""), str(e))
                 continue
+    
+    # --- 4) 워터마크 갱신 ---
+    if max_processed > last_ts:
+        update_last_published_at(conn, max_processed)
 
 if __name__ == "__main__":
     run_ingestion()
