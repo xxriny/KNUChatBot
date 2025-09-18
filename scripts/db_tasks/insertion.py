@@ -1,10 +1,10 @@
-from typing import Optional
 import pandas as pd
-from scripts.utils.db_utils import insert_and_return_id, insert_data
+import pyodbc
+from typing import Optional
 from scripts.utils.parsing_utils import parse_image_paths, parse_department
 from scripts.utils.key_utils import normalize_url, sha256_hex
 from scripts.utils.log_utils import init_runtime_logger, capture_unhandled_exception
-from scripts.utils.db_utils import get_connection
+from scripts.utils.db_utils import  maybe_open
 from scripts.db_tasks.notice_repo import(
     upsert_notice_keys, apply_llm_result,
     add_departments, add_attachments, upsert_ocr_text
@@ -39,10 +39,8 @@ def clean_row(row):
         "ocr_text": str(row.get("ocr_text", ""))
     }
 
-def insert_notice(parsed: dict, conn: Optional = None) -> int:
-    own = False
-    if conn is None:
-        conn = get_connection(); own = True
+def insert_notice(parsed: dict, conn: Optional[pyodbc.Connection]) -> int:
+    c, close_after = maybe_open(conn)
     try:
         title = str(parsed.get("title", "") or "")
         url   = str(parsed.get("url", "") or "")
@@ -55,49 +53,44 @@ def insert_notice(parsed: dict, conn: Optional = None) -> int:
         apply_llm_result(conn, notice_id, topic, oneline, deadline, new_title=title)
         return notice_id
     finally:
-        if own: conn.close()
+        if close_after:
+            c.close()
 
-def insert_notice_department(notice_id: int, departments, conn: Optional = None):
-    own = False
-    if conn is None:
-        conn = get_connection(); own = True
+def insert_notice_department(notice_id: int, departments, conn: Optional[pyodbc.Connection]):
+    c, close_after = maybe_open(conn)
     try:
         if not isinstance(departments, list):
             departments = list(departments)
         add_departments(conn, notice_id, departments)
     finally:
-        if own: conn.close()
+        if close_after:
+            c.close()
 
-def insert_notice_attachment(notice_id: int, image_paths, conn: Optional = None):
-    own = False
-    if conn is None:
-        conn = get_connection(); own = True
+def insert_notice_attachment(notice_id: int, image_paths, conn: Optional[pyodbc.Connection]):
+    c, close_after = maybe_open(conn)
     try:
         urls = parse_image_paths(image_paths)
         add_attachments(conn, notice_id, urls)
     finally:
-        if own: conn.close()
+        if close_after:
+            c.close()
 
-def insert_notice_ocr_text(notice_id: int, ocr_text: str, conn: Optional = None):
-    text = (ocr_text or "").strip()
-    if not text:
-        return
-    own = False
-    if conn is None:
-        conn = get_connection(); own = True
+def insert_notice_ocr_text(notice_id: int, ocr_text: str, conn: Optional[pyodbc.Connection]):
+    c, close_after = maybe_open(conn)
+
     try:
+        text = (ocr_text or "").strip()
+        if not text:
+            return
         upsert_ocr_text(conn, notice_id, text)
     finally:
-        if own: conn.close()
+        if close_after:
+            c.close()
 
-def insert_notice_all(parsed: dict, conn: Optional = None) -> int:
-    parsed = clean_row(parsed)
-
-    own = False
-    if conn is None:
-        conn = get_connection()
-        own = True
+def insert_notice_all(parsed: dict,  conn: Optional[pyodbc.Connection]) -> int:
+    c, close_after = maybe_open(conn)
     try:
+        parsed = clean_row(parsed)
         notice_id = insert_notice(parsed, conn=conn)
 
         depts = parsed.get("department", [])
@@ -121,9 +114,9 @@ def insert_notice_all(parsed: dict, conn: Optional = None) -> int:
 
         return notice_id
     finally:
-        if own:
+        if close_after:
             try:
-                conn.close()
+                c.close()
             except Exception:
                 capture_unhandled_exception(
                     index=None, phase="DB", url=parsed.get("url"),

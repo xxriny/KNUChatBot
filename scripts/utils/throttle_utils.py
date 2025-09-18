@@ -1,4 +1,3 @@
-# utils/throttle_utils.py
 import threading
 import time
 from typing import Optional
