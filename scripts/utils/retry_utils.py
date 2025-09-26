@@ -1,6 +1,10 @@
 import random
 import time
-from typing import Callable, Iterable, Optional, Type, Any, Tuple
+from typing import Callable, Iterable, Optional, Any
+
+RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
+RETRYABLE_STATUS_STR = {"UNAVAILABLE", "RESOURCE_EXHAUSTED"}  # 503/429 대응
+
 
 def jitter(seconds: float, ratio: float = 0.2) -> float:
     """
@@ -71,7 +75,15 @@ def retry_with_backoff(
                 attempt += 1
                 if not should_retry(e) or attempt > max_retries:
                     raise
-                sleep_s = jitter(delay, jitter_ratio)
+
+                #Retry-After 헤더 우선
+                headers = getattr(getattr(e, "response", None), "headers", None)
+                ra = parse_retry_after(headers)
+                if ra is not None and ra >= 0:
+                    sleep_s = jitter(ra, jitter_ratio)
+                else:
+                    sleep_s = jitter(delay, jitter_ratio)
+
                 if on_retry:
                     try:
                         on_retry(attempt, e, sleep_s)
@@ -90,3 +102,47 @@ def is_retryable_http_error(exc: Exception) -> bool:
     status = getattr(getattr(exc, "response", None), "status_code", None) \
              or getattr(getattr(exc, "response", None), "status", None)
     return status in (429, 500, 502, 503, 504)
+
+def _get_http_status(exc: Exception) -> Optional[int]:
+    return (
+        getattr(getattr(exc, "response", None), "status_code", None)
+        or getattr(getattr(exc, "response", None), "status", None)
+    )
+
+def is_retryable_genai_error(exc: Exception) -> bool:
+    """
+    Google GenAI(Gemini) 호출에서 재시도해볼 만한 오류인지 판별.
+    - 전용 예외 타입(ServerError/Unavailable/ResourceExhausted 등)
+    - HTTP 상태코드 429/5xx
+    - response_json.error.status 가 UNAVAILABLE/RESOURCE_EXHAUSTED
+    - 예외 문자열에 해당 키워드 포함 (fallback)
+    """
+    try:
+        from google.genai import errors as genai_errors
+        if isinstance(exc, (
+            genai_errors.ServerError,
+            getattr(genai_errors, "Unavailable", tuple()),
+            getattr(genai_errors, "ResourceExhausted", tuple())
+        )):
+            return True
+    except Exception:
+        pass
+
+    status = _get_http_status(exc)
+    if status in RETRYABLE_HTTP_STATUSES:
+        return True
+
+
+    rj = getattr(exc, "response_json", None)
+    if isinstance(rj, dict):
+        err = rj.get("error")
+        if isinstance(err, dict):
+            s = err.get("status")
+            if isinstance(s, str) and s.upper() in RETRYABLE_STATUS_STR:
+                return True
+            
+    msg = str(exc).upper()
+    if any(k in msg for k in ("UNAVAILABLE", "RESOURCE_EXHAUSTED", "OVERLOADED")):
+        return True
+
+    return False
