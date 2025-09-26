@@ -20,7 +20,6 @@ def insert_menu_rows(
         """
         rows = list(rows)
         cur.executemany(sql, rows)
-        c.commit()
         logger.info("[MENU_REPO] insert done - inserted=%d", len(rows))
         return len(rows)
     finally:
