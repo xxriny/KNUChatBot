@@ -1,22 +1,8 @@
-"""
-utils/db_utils.py
-
-이 모듈은 데이터베이스 연결 및 공통 삽입 로직을 정의한 유틸리티입니다.
-
-기능:
-- get_connection: DB 연결 객체 생성
-- insert_and_return_id: 데이터 삽입 후 생성된 PK(ID) 반환
-- insert_data: 일반적인 INSERT 쿼리 실행
-
-다양한 스크립트에서 공통적으로 사용하는 DB 연동 코드를 재사용 가능하게 정리했습니다.
-"""
+from contextlib import contextmanager
 import pyodbc, time
-from typing import Optional
+from typing import Iterator, Optional
 from configs.db_config import DB_CONFIG
-from scripts.utils.log_utils import (
-    init_runtime_logger,
-    capture_unhandled_exception,
-)
+from scripts.utils.log_utils import init_runtime_logger
 
 logger = init_runtime_logger()
 
@@ -71,3 +57,23 @@ def get_connection(retries: int = 3) -> pyodbc.Connection:
     # 재시도 후에도 실패
     logger.error("[DB] connect permanently failed: %s", last_err)
     raise last_err
+
+@contextmanager
+def transaction(conn: Optional[pyodbc.Connection]) -> Iterator[pyodbc.Connection]:
+    """
+    한 단위 작업을 원자적으로 커밋/롤백.
+    외부 커넥션이면 닫지 않고, 내부에서 열면 닫아줌.
+    autocommit=False면: 블록 성공 시 commit, 예외 시 rollback.
+    """
+    c, close_after = maybe_open(conn)
+    try:
+        yield c
+        if not getattr(c, "autocommit", False):
+            c.commit()
+    except Exception:
+        if not getattr(c, "autocommit", False):
+            c.rollback()
+        raise
+    finally:
+        if close_after:
+            c.close()

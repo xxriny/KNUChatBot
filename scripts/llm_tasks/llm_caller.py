@@ -2,10 +2,11 @@ from google.genai import types
 import re, json
 from scripts.llm_tasks.prompt_template import TEST_PROMPT_KR
 from scripts.llm_tasks.api_client import CLIENT, MODEL_ID
-from scripts.llm_tasks.exceptions import LLMCallError, LLMTimeoutError, LLMParseError
-from scripts.utils.log_utils import init_runtime_logger, capture_unhandled_exception
-
-
+from scripts.llm_tasks.exceptions import LLMCallError, LLMParseError
+from scripts.utils.log_utils import init_runtime_logger
+from scripts.utils.retry_utils import retry_with_backoff, is_retryable_genai_error
+from scripts.utils.throttle_utils import Throttler
+logger = init_runtime_logger()
 
 # 콘솔 출력 옵션 (원하면 둘 중 하나만 True)
 PRINT_LLM_RAW    = True   # 모델이 돌려준 원문 그대로 보고 싶을 때
@@ -21,6 +22,38 @@ def _pp(label: str, text: str):
         print(str(text))
     print("-" * 60)
 
+def _raw_generate(model_id: str, prompt: str):
+    try:
+        return CLIENT.models.generate_content(
+            model=MODEL_ID,
+            contents=[prompt],
+            config = types.GenerateContentConfig(
+                response_mime_type='application/json',
+             ),
+        )
+    except TypeError:
+        return CLIENT.models.generate_content(  # 없으면 폴백
+            model=MODEL_ID,
+            contents=[prompt]
+        )
+    
+safe_generate = retry_with_backoff(
+    _raw_generate,
+    should_retry=is_retryable_genai_error,
+    base=1.0, 
+    factor=2.0, 
+    max_delay=30.0, 
+    max_retries=6, 
+    jitter_ratio=0.2,
+    on_retry=lambda attempt, exc, sleep: logger.warning(
+        "[LLM] 재시도 a=%d sleep=%.2fs reason=%s", 
+        attempt, 
+        sleep, 
+        str(exc))
+)
+
+_THROTTER = Throttler(rps=1.0, burst=2.0, concurrency=2)
+
 def generate_llm_response(title: str, body: str, ocr_text: str) -> dict:
     # --- 프롬프트 구성 ---
     prompt = TEST_PROMPT_KR.format(
@@ -29,20 +62,11 @@ def generate_llm_response(title: str, body: str, ocr_text: str) -> dict:
         ocr_text=ocr_text or ""
     )
 
-    # 교체
     try:
-        response = CLIENT.models.generate_content(
-            model=MODEL_ID,
-            contents=[prompt],
-            config = types.GenerateContentConfig(
-                response_mime_type='application/json',
-             ),
-        )
-    except TypeError:
-        response = CLIENT.models.generate_content(  # 없으면 폴백
-            model=MODEL_ID,
-            contents=[prompt]
-        )
+        response = _THROTTER.run(safe_generate, MODEL_ID, prompt, tokens=1.0)
+    except Exception as e:
+        # 재시도 초과/기타 오류
+        raise LLMCallError(str(e))
 
     # --- 응답 텍스트 안전 추출 ---
     try:

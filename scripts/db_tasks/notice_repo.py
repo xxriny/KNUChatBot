@@ -25,7 +25,6 @@ def upsert_notice_keys(conn: Optional[pyodbc.Connection], title: str, url: str, 
         cur = c.cursor()
         cur.execute(sql, (url_hash, title, url, url_hash, title, url))  #url_hash: MERGE source / title, url, url_hash: INSERT 값 / title, url: UPDATE 값
         rid, action = cur.fetchone()
-        c.commit()
         return int(rid), (action == "INSERT") # 리턴: (notice_id, inserted여부)
     finally:
         if close_after: c.close()
@@ -56,7 +55,6 @@ def apply_llm_result(conn: Optional[pyodbc.Connection], notice_id: int,
     try:
         cur = c.cursor()
         cur.execute(sql, (topic, oneline, deadline, new_title, notice_id))
-        c.commit()
     finally:
         if close_after: c.close()
 
@@ -67,7 +65,6 @@ def mark_failed(conn: Optional[pyodbc.Connection], notice_id: int, to_retry_queu
     try:
         cur = c.cursor()
         cur.execute("UPDATE dbo.notice SET llm_status = ? WHERE id = ?;", (st, notice_id))
-        c.commit()
     finally:
         if close_after: c.close()
 
@@ -86,7 +83,6 @@ def add_departments(conn: Optional[pyodbc.Connection], notice_id: int, departmen
                 INSERT INTO dbo.notice_department (notice_id, department)
                 VALUES (?, ?);
             """, (notice_id, dept, notice_id, dept))
-        c.commit()
     finally:
         if close_after: c.close()
 
@@ -106,7 +102,6 @@ def add_attachments(conn: Optional[pyodbc.Connection], notice_id: int, image_url
                 INSERT INTO dbo.notice_attachment (notice_id, file_url, file_order)
                 VALUES (?, ?, ?);
             """, (notice_id, furl, notice_id, furl, order))
-        c.commit()
     finally:
         if close_after: c.close()
 
@@ -126,6 +121,5 @@ def upsert_ocr_text(conn: Optional[pyodbc.Connection], notice_id: int, ocr_text:
             WHEN MATCHED THEN
               UPDATE SET ocr_text = ?;
         """, (notice_id, notice_id, text, text))
-        c.commit()
     finally:
         if close_after: c.close()

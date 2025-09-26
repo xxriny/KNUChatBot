@@ -43,7 +43,7 @@ def to_utc_naive(ts: pd.Timestamp) -> pd.Timestamp:
     return ts.tz_localize(None)
 
 def update_last_published_at(conn: Optional[pyodbc.Connection], ts: pd.Timestamp):
-    c, close_after = maybe_open(conn)
+    c, close_after = maybe_open(conn) 
     try:
         ts_naive = to_utc_naive(ts).to_pydatetime()
         cur = c.cursor()
@@ -57,17 +57,6 @@ def update_last_published_at(conn: Optional[pyodbc.Connection], ts: pd.Timestamp
             WHEN NOT MATCHED THEN
                 INSERT (source_name, last_published_at) VALUES (s.source_name, s.last_published_at);
         """, ("knu_notice", ts_naive))
-
-        if close_after:
-            c.commit()
-        logger.info("[INGESTION_STATE] watermark upserted -> %s (source=%s)", ts, "knu_notice")
-
-
-    except Exception as e:
-        logger.error("[INGESTION_STATE] update failed: %s", e, exc_info=True)
-        if close_after:
-            c.rollback()
-        raise
     
     finally:
         if close_after: 
