@@ -28,7 +28,8 @@ def get_connection(retries: int = 3) -> pyodbc.Connection:
     user   = DB_CONFIG["user"]
     pwd    = DB_CONFIG["password"]
 
-    server = f"tcp:{host},{port}"
+   #server = f"tcp:{host},{port}"
+    server = f"{host},{port}"
     
     conn_str = (
         "DRIVER={ODBC Driver 18 for SQL Server};"
@@ -39,7 +40,7 @@ def get_connection(retries: int = 3) -> pyodbc.Connection:
         "Encrypt=Yes;"
         "TrustServerCertificate=Yes;"   # ← 임시로 검증 생략해서 먼저 연결 확인
         "Connection Timeout=15;"
-        "LoginTimeout=15;"
+       # "LoginTimeout=15;"
     )
 
     last_err = None
