@@ -1,0 +1,374 @@
+
+# from flask import Flask, request, jsonify
+# import pyodbc, os, re, calendar
+# from datetime import datetime, date, timedelta
+# from math import ceil
+# from dotenv import load_dotenv
+
+# load_dotenv()
+# app = Flask(__name__)
+
+# AZURE_BASE_URL = 'https://2d05e021848b.ngrok-free.app'
+# DEFAULT_IMAGE = "https://kchatsotrage.blob.core.windows.net/images/default.png"  # 필요 시 도메인 확인
+
+# # ===== 캐시 =====
+# TOPIC_CACHE = {"loaded_at": None, "norm_map": {}}
+# DEPT_CACHE  = {"loaded_at": None, "norm_to_canonical": {}, "all_norms": set()}
+
+# TOPIC_ALIASES = {
+#     "장학금": "장학", "오래순": "오래된순",
+#     "학사": "학사", "공모전": "공모전",
+#     "행사": "행사", "취업": "취업", "경진대회": "공모전",
+# }
+# SORT_ALIASES = {"마감순":"마감순","최신순":"최신순","오래된순":"오래된순","오래순":"오래된순"}
+# DEPT_ALL_TOKENS = {"전체","전부","전체학과","all"}
+# _DEPT_SUFFIXES = ("학과","학부","전공","과","부")  # 접미사 제거용
+
+# # ===== 유틸 =====
+# def _norm(s: str) -> str:
+#     return (s or "").lower().replace(" ","").strip()
+
+# def _norm_dept(s: str) -> str:
+#     t = _norm(s)
+#     for suf in _DEPT_SUFFIXES:
+#         if t.endswith(suf):
+#             t = t[:-len(suf)]
+#             break
+#     return t  # 예: '원예과','원예과학전공' -> '원예','원예과학'
+
+# def _to_text(x) -> str:
+#     if isinstance(x, str): return x
+#     if isinstance(x, (int, float)): return str(x)
+#     if isinstance(x, dict):
+#         for k in ("utterance","user_input","value","text","resolved","original"):
+#             v = x.get(k)
+#             if isinstance(v, str):
+#                 return v
+#         for v in x.values():
+#             t = _to_text(v)
+#             if t: return t
+#         return ""
+#     if isinstance(x, (list, tuple)):
+#         for v in x:
+#             t = _to_text(v)
+#             if t: return t
+#         return ""
+#     return ""
+
+# def get_utterance_from_payload(data: dict) -> str:
+#     u = _to_text((data or {}).get("userRequest", {}).get("utterance", ""))
+#     if not u:
+#         u = _to_text((data or {}).get("action", {}).get("params", {}))
+#     if not u:
+#         u = _to_text((data or {}).get("action", {}).get("detailParams", {}))
+#     return (u or "").strip()
+
+# def get_db_connection():
+#     return pyodbc.connect(
+#         f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+#         f"SERVER={os.getenv('DB_SERVER')};"
+#         f"DATABASE={os.getenv('DB_NAME')};"
+#         f"UID={os.getenv('DB_USER')};"
+#         f"PWD={os.getenv('DB_PASSWORD')};"
+#         f"Encrypt=yes;TrustServerCertificate=yes;"
+#         f"Connection Timeout=5;"
+#     )
+
+# # ===== 토픽/학과 로딩 =====
+# def load_topics_from_db() -> dict:
+#     rows = []
+#     try:
+#         conn = get_db_connection(); cur = conn.cursor()
+#         cur.execute("""
+#             SELECT DISTINCT topic FROM dbo.notice
+#             WHERE topic IS NOT NULL AND LTRIM(RTRIM(topic)) <> ''
+#         """)
+#         rows = cur.fetchall(); cur.close(); conn.close()
+#     except Exception as e:
+#         print("WARN: load_topics_from_db failed:", e)
+#     norm_map = {}
+#     for (topic,) in rows:
+#         t = (topic or "").strip()
+#         if t: norm_map[_norm(t)] = t
+#     for a, c in TOPIC_ALIASES.items():
+#         norm_map.setdefault(_norm(a), c)
+#         norm_map.setdefault(_norm(c), c)
+#     return norm_map
+
+# def get_topic_norm_map(ttl_seconds=600) -> dict:
+#     now = datetime.utcnow()
+#     if TOPIC_CACHE["loaded_at"] is None or (now - TOPIC_CACHE["loaded_at"]).total_seconds() > ttl_seconds:
+#         TOPIC_CACHE["norm_map"] = load_topics_from_db()
+#         TOPIC_CACHE["loaded_at"] = now
+#         print(f"INFO: topic cache loaded ({len(TOPIC_CACHE['norm_map'])} items)")
+#     return TOPIC_CACHE["norm_map"]
+
+# def load_departments_from_db() -> dict:
+#     rows = []
+#     try:
+#         conn = get_db_connection(); cur = conn.cursor()
+#         cur.execute("""
+#             SELECT DISTINCT department
+#             FROM dbo.notice_department
+#             WHERE department IS NOT NULL AND LTRIM(RTRIM(department)) <> ''
+#         """)
+#         rows = cur.fetchall(); cur.close(); conn.close()
+#     except Exception as e:
+#         print("WARN: load_departments_from_db failed:", e)
+#     norm_to_canonical = {}
+#     for (dept,) in rows:
+#         original = (dept or "").strip()
+#         if not original: continue
+#         key = _norm_dept(original)
+#         if not key: continue
+#         prev = norm_to_canonical.get(key)
+#         if prev is None or len(original) > len(prev):
+#             norm_to_canonical[key] = original
+#     return norm_to_canonical
+
+# def get_dept_norm_map(ttl_seconds=600) -> dict:
+#     now = datetime.utcnow()
+#     if DEPT_CACHE["loaded_at"] is None or (now - DEPT_CACHE["loaded_at"]).total_seconds() > ttl_seconds:
+#         m = load_departments_from_db()
+#         DEPT_CACHE["norm_to_canonical"] = m
+#         DEPT_CACHE["all_norms"] = set(m.keys())
+#         DEPT_CACHE["loaded_at"] = now
+#         print(f"INFO: dept cache loaded ({len(m)} items)")
+#     return DEPT_CACHE["norm_to_canonical"]
+
+# def resolve_department(user_text: str) -> str:
+#     if not user_text: return ""
+#     norm_map = get_dept_norm_map()
+#     key = _norm_dept(user_text)
+#     if key in norm_map: return norm_map[key]
+#     if len(key) >= 2:
+#         starts = [norm_map[k] for k in norm_map if k.startswith(key)]
+#         if len(starts) == 1: return starts[0]
+#         if len(starts) > 1:  return max(starts, key=len)
+#         contains = [norm_map[k] for k in norm_map if key in k]
+#         if len(contains) == 1: return contains[0]
+#         if len(contains) > 1:  return max(contains, key=len)
+#     return user_text  # 매칭 실패 시 원문
+
+# # ===== 파서 =====
+# def smart_parse_topic_dept_sort(utterance: str):
+#     norm_map = get_topic_norm_map()
+#     known_topics = set(norm_map.keys())
+#     tokens = [t for t in re.split(r"[,\s]+", (utterance or "").strip()) if t]
+#     topic, dept_canon, sort_opt, dept_raw = "", "", "최신순", ""
+#     for tok in tokens:
+#         t = _norm(tok)
+#         # 정렬어
+#         if t in { _norm(k) for k in SORT_ALIASES }:
+#             sort_opt = SORT_ALIASES.get(tok, SORT_ALIASES.get(next((k for k in SORT_ALIASES if _norm(k)==t), "최신순"), "최신순"))
+#             continue
+#         # 전체
+#         if t in {_norm(x) for x in DEPT_ALL_TOKENS}:
+#             dept_canon, dept_raw = "", ""; continue
+#         # 토픽
+#         if t in known_topics or t == _norm("학사"):
+#             if not topic:
+#                 topic = norm_map.get(t, "학사" if t == _norm("학사") else tok)
+#             elif not dept_canon:
+#                 dept_raw   = tok
+#                 dept_canon = resolve_department(tok)
+#             continue
+#         # 학과
+#         if not dept_canon:
+#             dept_raw   = tok               # ← 표시용은 사용자가 친 그대로
+#             dept_canon = resolve_department(tok)  # ← 검색용
+#             continue
+
+#     if not topic and not dept_canon and len(tokens) >= 2:
+#         topic    = tokens[0]
+#         dept_raw = "".join(tokens[1:])
+#         dept_canon = resolve_department(dept_raw)
+
+#     if not topic and not dept_canon and len(tokens) == 1:
+#         t0 = _norm(tokens[0])
+#         topic = norm_map.get(t0, "")
+#         if not topic:
+#             dept_raw   = tokens[0]
+#             dept_canon = resolve_department(dept_raw)
+#     return topic, dept_canon, sort_opt, dept_raw
+
+# # ===== 학사일정 =====
+# def parse_schedule_range(utterance: str, today: date):
+#     u = (utterance or "").replace(" ","").lower()
+#     if "오늘학사일정" in u or u == "오늘":    return today, today, "오늘 학사일정"
+#     if "내일학사일정" in u or u == "내일":    return today+timedelta(days=1), today+timedelta(days=1), "내일 학사일정"
+#     if "이번달" in u:
+#         start = date(today.year, today.month, 1)
+#         end = date(today.year, today.month, calendar.monthrange(today.year,today.month)[1])
+#         return start, end, f"{today.year}년 {today.month}월 학사일정"
+#     if "다음달" in u:
+#         y = today.year + (1 if today.month==12 else 0); m = 1 if today.month==12 else today.month+1
+#         start = date(y, m, 1); end = date(y, m, calendar.monthrange(y,m)[1])
+#         return start, end, f"{y}년 {m}월 학사일정"
+#     m = re.search(r'(?:(20\d{2})년)?(\d{1,2})월학사일정', u)
+#     if m:
+#         y = int(m.group(1)) if m.group(1) else today.year
+#         mon = int(m.group(2)); start = date(y,mon,1); end = date(y,mon,calendar.monthrange(y,mon)[1])
+#         return start, end, f"{y}년 {mon}월 학사일정"
+#     if "학사일정" in u: return None, None, "학사일정 전체"
+#     return None, None, ""
+
+# def fetch_academic_events(conn, start: date|None, end: date|None):
+#     cur = conn.cursor()
+#     if start and end:
+#         cur.execute("""
+#             SELECT title,start_date,end_date
+#             FROM dbo.academic_event
+#             WHERE start_date <= ? AND end_date >= ?
+#             ORDER BY start_date, title
+#         """, end, start)
+#     else:
+#         cur.execute("""
+#             SELECT title,start_date,end_date
+#             FROM dbo.academic_event
+#             ORDER BY start_date, title
+#         """)
+#     rows = cur.fetchall(); cur.close(); return rows
+
+# def format_event_line(title: str, sd, ed) -> str:
+#     if isinstance(sd, datetime): sd = sd.date()
+#     if isinstance(ed, datetime): ed = ed.date()
+#     return f"{sd:%Y-%m-%d} · {title}" if sd==ed else f"{sd:%Y-%m-%d} ~ {ed:%Y-%m-%d} · {title}"
+
+# def make_text_outputs_from_lines(lines, title_label: str, page: int, page_size: int):
+#     total = len(lines); total_pages = max(1, ceil(total / page_size))
+#     page = max(1, min(page, total_pages))
+#     start_idx = (page - 1)*page_size; end_idx = min(total, start_idx+page_size)
+#     slice_lines = lines[start_idx:end_idx]
+#     outputs = [{"simpleText":{"text": f"📅 {title_label}\n" + "\n".join(slice_lines)}}]
+#     qrs = []
+#     if page>1: qrs.append({"action":"message","label":"◀ 이전","messageText":f"{title_label} p:{page-1}"})
+#     if page<total_pages: qrs.append({"action":"message","label":"다음 ▶","messageText":f"{title_label} p:{page+1}"})
+#     return outputs, qrs
+
+# # ===== Flask =====
+# @app.route('/')
+# def hello():
+#     return '안녕'
+
+# @app.route('/message', methods=['POST'])
+# def message():
+#     try:
+#         data = request.get_json(force=True)
+#     except Exception as e:
+#         print("❌ JSON parse error:", e); return 'Invalid JSON', 400
+
+#     utterance = get_utterance_from_payload(data)
+#     print("[HIT]", datetime.utcnow().isoformat(), "utterance=", repr(utterance), flush=True)
+
+#     # --- 학사일정 ---
+#     if "학사일정" in utterance.replace(" ",""):
+#         today = datetime.today().date()
+#         mpage = re.search(r'\bp\s*:\s*(\d+)', utterance.lower())
+#         page = max(1, int(mpage.group(1))) if mpage else 1
+#         start, end, label = parse_schedule_range(utterance, today)
+#         conn = get_db_connection()
+#         try:
+#             rows = fetch_academic_events(conn, start, end)
+#         finally:
+#             conn.close()
+#         lines = [format_event_line(t, sd, ed) for (t,sd,ed) in rows]
+#         if not lines:
+#             return make_text_response(f"{label or '학사일정'} 결과가 없어요.")
+#         outputs, qrs = make_text_outputs_from_lines(lines, label or "학사일정", page, 20)
+#         return jsonify({"version":"2.0", "template":{"outputs":outputs, "quickReplies":qrs}})
+
+#     # --- 공지 검색(발화만으로 파싱) ---
+#     topic, dept_canon, sort_option, dept_raw = smart_parse_topic_dept_sort(utterance)
+#     if not topic and not dept_canon:
+#         return make_text_response("예: '공모전 컴퓨터공학과', '장학 전체', '취업 최신순'처럼 알려주세요.")
+
+#     topic_key = _norm(topic)
+#     dept_key  = _norm_dept(dept_canon)
+#     topic_like = f"%{topic_key}%" if topic_key else "%%"
+#     dept_like  = f"%{dept_key}%"  if dept_key  else "%%"
+
+#     query = """
+# SELECT DISTINCT
+#     n.id, n.title, n.deadline, n.oneline, n.topic, n.created_at, n.url,
+#     a.file_url,
+#     dep.departments
+# FROM dbo.notice AS n
+# JOIN (
+#     SELECT notice_id, STRING_AGG(department, ', ') AS departments
+#     FROM dbo.notice_department
+#     GROUP BY notice_id
+# ) AS dep ON n.id = dep.notice_id
+# OUTER APPLY (
+#     SELECT TOP 1 file_url
+#     FROM dbo.notice_attachment
+#     WHERE notice_id = n.id
+#     ORDER BY file_order ASC
+# ) AS a
+# WHERE EXISTS (
+#     SELECT 1
+#     FROM dbo.notice_department AS d
+#     WHERE d.notice_id = n.id
+#       AND LOWER(
+#             REPLACE(
+#             REPLACE(
+#             REPLACE(
+#             REPLACE(
+#             REPLACE(REPLACE(d.department,' ',''),
+#                     N'학과',''),
+#                     N'학부',''),
+#                     N'전공',''),
+#                     N'과',''),
+#                     N'부','')
+#           ) LIKE ?
+# )
+# AND LOWER(REPLACE(n.topic, ' ', '')) LIKE ?
+# """
+#     # 정렬: 기본 최신순
+#     if sort_option == '마감순':
+#         # 마감일 없는 건 뒤로, 그 다음 마감일 오름차순
+#         query += " ORDER BY CASE WHEN n.deadline IS NULL THEN 1 ELSE 0 END, n.deadline ASC"
+#     elif sort_option == '오래된순':
+#         query += " ORDER BY n.created_at ASC"
+#     else:
+#         query += " ORDER BY n.created_at DESC"
+
+#     conn = get_db_connection(); cur = conn.cursor()
+#     try:
+#         # 날짜 필터 파라미터 제거됨
+#         cur.execute(query, dept_like, topic_like)
+#         rows = cur.fetchall()
+#     finally:
+#         cur.close(); conn.close()
+
+#     display_dept = dept_raw or dept_canon  # ← 사용자 입력 그대로 우선 표시
+#     if not rows:
+#         return make_text_response(f"'{topic or '전체'}, {display_dept or '전체'}' 관련 공지가 없어요.")
+
+#     cards = []
+#     for (notice_id, title, deadline, one_line, topic_val, created_at, link_url, file_url, departments) in rows[:5]:
+#         image_url = file_url if (file_url and str(file_url).startswith("http")) else DEFAULT_IMAGE
+#         # 마감일 표기 규칙
+#         deadline_desc = f"마감 {deadline.strftime('%Y-%m-%d')}" if deadline else "마감일 없음"
+#         cards.append({
+#             "imageTitle": {
+#                 "title": (title or "")[:40],
+#                 "description": f"{topic or '전체'} · {display_dept or '전체'} · {deadline_desc}"
+#             },
+#             "thumbnail": {"imageUrl": image_url, "link": {"web": image_url}},
+#             "itemList": [{"title":"요약","description": (one_line or "요약 없음")[:100]}],
+#             "itemListAlignment": "left",
+#             "buttons": [{"action":"webLink","label":"자세히 보기","webLinkUrl": link_url}]
+#         })
+#     outputs = [{"itemCard": cards[0]}] if len(cards)==1 else [{"carousel":{"type":"itemCard","items":cards}}]
+#     return jsonify({"version":"2.0", "template":{"outputs": outputs}})
+
+# # ===== 공통 응답 =====
+# def make_text_response(text):
+#     return jsonify({
+#         "version":"2.0",
+#         "template":{"outputs":[{"simpleText":{"text": text}}]}
+#     })
+
+# if __name__ == '__main__':
+#     app.run(host='0.0.0.0', port=5000)

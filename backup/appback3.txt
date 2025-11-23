@@ -1,0 +1,492 @@
+from flask import Flask, request, jsonify
+import pyodbc
+import os
+from datetime import datetime,date,timedelta
+from dotenv import load_dotenv
+import re
+import calendar
+from math import ceil
+
+load_dotenv()
+
+app = Flask(__name__)
+
+#AZURE_BASE_URL = 'https://knuchat.azurewebsites.net'
+AZURE_BASE_URL = 'https://0a8c1bc3c834.ngrok-free.app'
+DEFAULT_IMAGE = f"https://kchatsotrage.blob.core.windows.net/images/default.png"
+# ==== 동적 토픽 인식: DB에서 distinct topic 로드 + 캐시 ====
+TOPIC_ALIASES = {
+    "장학금": "장학",
+    "오래순": "오래된순",
+    "학사": "학사",
+    "공모전": "공모전",
+    "행사": "행사",
+    "취업": "취업",
+    "경진대회": "공모전",
+}
+TOPIC_CACHE = {"loaded_at": None, "norm_map": {}}  # norm(topic) -> original
+
+def _norm(s: str) -> str:
+    return (s or "").lower().replace(" ", "").strip()
+
+def load_topics_from_db() -> dict:
+    """dbo.notice.topic 에서 DISTINCT 로 읽어와 norm_map 생성"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT topic FROM dbo.notice WHERE topic IS NOT NULL AND LTRIM(RTRIM(topic)) <> ''")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print("WARN: load_topics_from_db failed:", e)
+        rows = []
+
+    norm_map = {}
+    for (topic,) in rows:
+        original = topic.strip()
+        norm_map[_norm(original)] = original
+    # 기본 별칭도 병합(별칭 → 정식)
+    for alias, canonical in TOPIC_ALIASES.items():
+        norm_map.setdefault(_norm(alias), canonical)
+        norm_map.setdefault(_norm(canonical), canonical)
+    return norm_map
+
+def get_topic_norm_map(ttl_seconds: int = 600) -> dict:
+    """10분 캐시(기본). 필요 시 ttl_seconds 조정"""
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    if TOPIC_CACHE["loaded_at"] is None or (now - TOPIC_CACHE["loaded_at"]).total_seconds() > ttl_seconds:
+        TOPIC_CACHE["norm_map"] = load_topics_from_db()
+        TOPIC_CACHE["loaded_at"] = now
+        print(f"INFO: topic cache loaded ({len(TOPIC_CACHE['norm_map'])} items)")
+    return TOPIC_CACHE["norm_map"]
+SORT_ALIASES = {
+    "마감순": "마감순",
+    "최신순": "최신순",
+    "오래된순": "오래된순",
+    "오래순": "오래된순",
+}
+DEPT_ALL_TOKENS = {"전체", "전부", "전체학과", "all"}
+
+def _is_dept_like(raw: str) -> bool:
+    t = _norm(raw)
+    return (
+        t.endswith(("과", "학과", "학부", "전공", "부"))
+        or any(h in t for h in ["컴공", "전산", "전자", "정보통신", "소프트웨어", "ai", "sw"])
+        or t in {"컴퓨터", "컴퓨터공학", "의과", "의학", "경영", "경제", "화학", "수학", "물리"}
+    )
+def smart_parse_topic_dept_sort(utterance: str):
+    norm_map = get_topic_norm_map()
+    known_topics = set(norm_map.keys())
+
+    tokens = [t for t in re.split(r"[,\s]+", (utterance or "").strip()) if t]
+    topic, dept, sort_opt = "", "", "마감순"
+
+    for tok in tokens:
+        t = _norm(tok)
+        for k, v in SORT_ALIASES.items():
+            if _norm(k) == t:
+                sort_opt = v
+                break
+        else:
+            if t in {_norm(x) for x in DEPT_ALL_TOKENS}:
+                dept = ""
+                continue
+            if t in known_topics:
+                if topic == "":
+                    topic = norm_map[t]
+                else:
+                    if dept == "":
+                        dept = tok
+                continue
+            if _is_dept_like(tok) or topic:  # 이미 토픽이 있으면 나머지는 학과로
+                if dept == "":
+                    dept = tok
+                continue
+
+    # 🔧 보정 1: 단어가 2개 이상인데 아직도 비어 있으면 “첫=토픽, 나머지=학과”
+    if topic == "" and dept == "" and len(tokens) >= 2:
+        topic = tokens[0]
+        dept  = "".join(tokens[1:])  # "컴퓨터 공학과" 같이 띄어쓰기 합치기
+
+    # 🔧 보정 2: 단어가 1개뿐인데 비어 있으면, 먼저 토픽 시도 → 실패 시 학과로
+    if topic == "" and dept == "" and len(tokens) == 1:
+        t0 = _norm(tokens[0])
+        topic = norm_map.get(t0, "")
+        if topic == "":
+            dept = tokens[0]
+
+    return topic, dept, sort_opt
+
+def get_db_connection():
+    return pyodbc.connect(
+        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+        f"SERVER={os.getenv('DB_SERVER')};"
+        f"DATABASE={os.getenv('DB_NAME')};"
+        f"UID={os.getenv('DB_USER')};"
+        f"PWD={os.getenv('DB_PASSWORD')};"
+        f"Encrypt=no;"
+    )
+
+def parse_schedule_range(utterance: str, today: date):
+    u = (utterance or "").strip().replace(" ", "").lower()
+
+    if "오늘학사일정" in u or u == "오늘":
+        return today, today, "오늘 학사일정"
+    
+    if "내일학사일정" in u or u == "내일":
+        tomorrow = today + timedelta(days=1)
+        return tomorrow, tomorrow, "내일 학사일정"
+    
+    if "이번달학사일정" in u or "이번달" in u:
+        start = date(today.year, today.month, 1)
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        end = date(today.year, today.month, last_day)
+        return start, end, f"{today.year}년 {today.month}월 학사일정"
+
+    if "다음달학사일정" in u or "다음달" in u:
+        year = today.year + (1 if today.month == 12 else 0)
+        month = 1 if today.month == 12 else today.month + 1
+        start = date(year, month, 1)
+        last_day = calendar.monthrange(year, month)[1]
+        end = date(year, month, last_day)
+        return start, end, f"{year}년 {month}월 학사일정"
+
+    m = re.search(r'(?:(20\d{2})년)?(\d{1,2})월학사일정', u)
+    if m:
+        y = int(m.group(1)) if m.group(1) else today.year
+        mon = int(m.group(2))
+        start = date(y, mon, 1)
+        last_day = calendar.monthrange(y, mon)[1]
+        end = date(y, mon, last_day)
+        return start, end, f"{y}년 {mon}월 학사일정"
+
+    if "학사일정" in u:
+        return None, None, "학사일정 전체"
+
+    return None, None, ""
+
+
+def fetch_academic_events(conn, start: date|None, end: date|None):
+    """
+    기간 교집합 조건:
+      start_date <= (요청 end) AND end_date >= (요청 start)
+    start/end가 None이면 전체
+    """
+    cursor = conn.cursor()
+    if start and end:
+        sql = """
+        SELECT title, start_date, end_date
+        FROM dbo.academic_event
+        WHERE start_date <= ? AND end_date >= ?
+        ORDER BY start_date, title
+        """
+        cursor.execute(sql, end, start)
+    else:
+        sql = """
+        SELECT title, start_date, end_date
+        FROM dbo.academic_event
+        ORDER BY start_date, title
+        """
+        cursor.execute(sql)
+    rows = cursor.fetchall()
+    cursor.close()
+    return rows
+
+
+def format_event_line(title: str, sd, ed) -> str:
+    # sd, ed: datetime.date 또는 datetime
+    if isinstance(sd, datetime):
+        sd = sd.date()
+    if isinstance(ed, datetime):
+        ed = ed.date()
+    if sd == ed:
+        return f"{sd:%Y-%m-%d} · {title}"
+    else:
+        return f"{sd:%Y-%m-%d} ~ {ed:%Y-%m-%d} · {title}"
+
+
+def chunk_lines(lines, chunk_size=20):
+    for i in range(0, len(lines), chunk_size):
+        yield lines[i:i+chunk_size]
+
+
+def make_text_outputs_from_lines(lines, title_label: str, page: int, page_size: int):
+    """
+    lines 전체를 page/page_size로 끊어 simpleText outputs + quickReplies(다음/이전) 구성
+    """
+    total = len(lines)
+    total_pages = max(1, ceil(total / page_size))
+    page = max(1, min(page, total_pages))
+    start_idx = (page - 1) * page_size
+    end_idx = min(total, start_idx + page_size)
+    slice_lines = lines[start_idx:end_idx]
+
+    outputs = []
+    header = f"📅 {title_label}"
+    body = header + "\n" + "\n".join(slice_lines)
+    outputs.append({"simpleText": {"text": body}})
+
+    qrs = []
+    if page > 1:
+        qrs.append({
+            "action": "message",
+            "label": "◀ 이전",
+            "messageText": f"{title_label} p:{page-1}"
+        })
+    if page < total_pages:
+        qrs.append({
+            "action": "message",
+            "label": "다음 ▶",
+            "messageText": f"{title_label} p:{page+1}"
+        })
+    return outputs, qrs
+
+
+@app.route('/')
+def hello():
+    return '안녕'
+
+@app.route('/message', methods=['POST'])
+def message():
+    try:
+        data = request.get_json(force=True)
+        print("✅ DEBUG - JSON data:", data)
+    except Exception as e:
+        print("❌ ERROR - JSON 파싱 실패:", str(e))
+        return 'Invalid JSON', 400
+    
+    #09.07. 15:02 utterance 오류 수정
+
+    # utterance = (
+    #     data.get('userRequest', {}).get('utterance')
+    #     or data.get('action', {}).get('params', {}).get('utterance', '')
+    # ).strip()
+
+    params = (data.get('action', {}) or {}).get('params', {}) or {}
+    # params 안에 어떤 키로 들어올지 모르니 첫 값도 후보에 포함
+    first_param_val = next(iter(params.values()), "")
+    utterance = (
+        data.get('userRequest', {}).get('utterance')  # 일반 텍스트
+        or params.get('utterance')                    # 엔티티명이 'utterance'인 경우
+        or first_param_val                            # 엔티티명이 user_input 등인 경우
+        or ''
+    ).strip()
+    # === 학사일정 분기 ===
+    if "학사일정" in utterance.replace(" ", ""):
+        today = datetime.today().date()
+
+        # 페이지 커서 파싱: "… p:3"
+        page = 1
+        mpage = re.search(r'\bp\s*:\s*(\d+)', utterance.lower())
+        if mpage:
+            try:
+                page = max(1, int(mpage.group(1)))
+            except:
+                page = 1
+
+        start, end, label = parse_schedule_range(utterance, today)
+        conn = get_db_connection()
+        try:
+            rows = fetch_academic_events(conn, start, end)
+        finally:
+            conn.close()
+
+        lines = [format_event_line(title, sd, ed) for (title, sd, ed) in rows]
+
+        if not lines:
+            return make_text_response(f"{label or '학사일정'} 결과가 없어요.")
+
+        outputs, quick_replies = make_text_outputs_from_lines(lines, label or "학사일정", page, page_size=20)
+
+        return jsonify({
+            "version": "2.0",
+            "template": {
+                "outputs": outputs,
+                "quickReplies": quick_replies
+            }
+        })
+    
+    skill_data = data.get('skillData', {})
+    topic = skill_data.get('topic')
+    department = skill_data.get('department')
+    sort_option = skill_data.get('sort')
+
+    if not topic or not department:
+        utterance = (
+            data.get('userRequest', {}).get('utterance')
+            or data.get('action', {}).get('params', {}).get('utterance', '')
+        ).strip()
+        #쉼표에서 교체
+        # parts = [s.strip() for s in utterance.split(',')]
+        # if len(parts) < 2:
+        #     return make_text_response("방금 하신 말씀을 잘 이해하지 못했어요.\n'주제, 학과' 형식으로 알려주셔야 가장 정확하게 찾아드릴 수 있어요!")
+
+        # topic = parts[0]
+        # department = parts[1]
+        # sort_option = parts[2] if len(parts) >= 3 else '마감순'
+        # 쉼표 또는 공백 기준으로 분리
+        p_topic, p_dept, p_sort = smart_parse_topic_dept_sort(utterance)
+
+        topic = (skill_data.get('topic') or p_topic or "").strip()
+        department = (skill_data.get('department') or p_dept or "").strip()
+        sort_option = (skill_data.get('sort') or p_sort or "마감순").strip()
+
+        if topic == "" and department == "":
+            return make_text_response("예: '공모전 컴퓨터공학과', '장학 전체', '취업 최신순'처럼 알려주세요.")
+
+    # 전처리
+    topic_norm = _norm(topic)
+    dept_norm  = _norm(department)
+
+    topic_like = f"%{topic_norm}%" if topic_norm else "%%"
+    dept_like  = f"%{dept_norm}%"  if dept_norm  else "%%"
+
+    today = datetime.today().date()
+
+    # 쿼리
+    # query = """
+    #     SELECT DISTINCT
+    #         n.id, n.title, n.deadline, n.oneline, n.topic, n.created_at, n.url,
+    #         a.file_url
+    #     FROM dbo.notice n
+    #     JOIN dbo.notice_department d ON n.id = d.notice_id
+    #     OUTER APPLY (
+    #         SELECT TOP 1 file_url
+    #         FROM dbo.notice_attachment
+    #         WHERE notice_id = n.id
+    #         ORDER BY file_order ASC
+    #     ) a
+    #     WHERE REPLACE(LOWER(d.department), ' ', '') LIKE ?
+    #     AND REPLACE(LOWER(n.topic), ' ', '') LIKE ?
+    #     AND (n.deadline IS NULL OR n.deadline >= ?)
+    # """
+    query = """
+SELECT DISTINCT
+    n.id, n.title, n.deadline, n.oneline, n.topic, n.created_at, n.url,
+    a.file_url,
+    dep.departments
+FROM dbo.notice n
+JOIN (
+    SELECT
+        notice_id,
+        STRING_AGG(department, ', ') AS departments
+    FROM dbo.notice_department
+    GROUP BY notice_id
+) dep ON n.id = dep.notice_id
+OUTER APPLY (
+    SELECT TOP 1 file_url
+    FROM dbo.notice_attachment
+    WHERE notice_id = n.id
+    ORDER BY file_order ASC
+) a
+WHERE n.id IN (
+    SELECT notice_id
+    FROM dbo.notice_department
+    WHERE REPLACE(LOWER(department), ' ', '') LIKE ?
+)
+AND REPLACE(LOWER(n.topic), ' ', '') LIKE ?
+AND (n.deadline IS NULL OR n.deadline >= ?)
+    """
+    if sort_option == '마감순':
+        query += " ORDER BY n.deadline ASC"
+    elif sort_option == '최신순':
+        query += " ORDER BY n.created_at DESC"
+    elif sort_option == '오래된순':
+        query += " ORDER BY n.created_at ASC"
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(query, dept_like, topic_like, today)
+        rows = cursor.fetchall()
+
+        if not rows:
+            return make_text_response(f"'{topic}, {department}' 관련 마감 기한이 지난 정보이거나 공지사항이 존재하지 않아요.")
+        cards = []
+        full_lines = []  # 안 쓰면 삭제해도 됨
+        outputs = []
+        
+        for idx, row in enumerate(rows[:5], start=1):
+            notice_id, title, deadline, one_line, topic_val, created_at, link_url, file_url, departments = row
+            image_url = file_url if (file_url and str(file_url).startswith("http")) else DEFAULT_IMAGE
+            deadline_text = deadline.strftime('%Y-%m-%d') if deadline else '정보 없음'
+            cards.append({
+                "imageTitle": {
+                    "title": title[:40],
+                    "description": f"마감 {deadline_text}"
+                },
+                "thumbnail": {
+                    "imageUrl": image_url,       # 썸네일 표시용
+                    "link": { "web": image_url } # 이미지 클릭 시 원본 열기
+                },
+                "itemList": [
+                    { "title": "요약", "description": (one_line or "요약 없음")[:100] }
+                ],
+                "itemListAlignment": "left",
+                "buttons": [
+                    { "action": "webLink", "label": "자세히 보기", "webLinkUrl": link_url }  # 사이트 URL
+                ]
+            })
+
+
+            # cards.append({
+            #     "itemCard": {
+            #         "imageTitle": {         # 상단 큰 타이틀 영역
+            #             "title": title,
+            #             "description": f"마감 {deadline_text}"
+            #         },
+            #         "thumbnail": {          # 우상단 썸네일 (선택)
+            #             "imageUrl": image_url
+            #         },
+            #         "itemList": [           # 여기 항목으로 길게 넣으면 안 잘림
+            #             { "title": "요약",  "description": one_line or "요약 없음" },
+            #             { "title": "학과",  "description": departments or "-" },
+            #             { "title": "링크",  "description": link_url }
+            #         ],
+            #         "itemListAlignment": "left",
+            #         "buttons": [
+            #             { "action": "webLink", "label": "자세히 보기", "webLinkUrl": link_url }
+            #         ]
+            #     }
+            # })
+        if len(cards) == 1:
+            outputs.append({ "itemCard": cards[0] })
+        else:
+            outputs.append({ "carousel": { "type": "itemCard", "items": cards } })
+
+        return jsonify({ "version": "2.0", "template": { "outputs": outputs } })
+        # return jsonify({
+        #     "version": "2.0",
+        #     "template": {
+        #         "outputs": [
+        #             {
+        #                 "carousel": {
+        #                     "type": "itemCard",
+        #                     "items": cards
+        #                 }
+        #             }
+        #         ]
+        #     }
+        # })
+    finally:
+        cursor.close()
+        conn.close()
+
+def make_text_response(text):
+    return jsonify({
+        "version": "2.0",
+        "template": {
+            "outputs": [
+                {
+                    "simpleText": {
+                        "text": text
+                    }
+                }
+            ]
+        }
+    })
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
