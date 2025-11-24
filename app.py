@@ -9,6 +9,7 @@ app = Flask(__name__)
 
 # ===== 기본 상수 =====
 AZURE_BASE_URL = 'https://knuchat.azurewebsites.net'
+#AZURE_BASE_URL = 'https://699ef49c36cc.ngrok-free.app'
 DEFAULT_IMAGE = "https://kchatsotrage.blob.core.windows.net/images/default.png"  # 실제 컨테이너/경로 확인 권장
 DEBUG_MODE = os.getenv("APP_DEBUG", "0") == "1"
 
@@ -20,6 +21,7 @@ TOPIC_ALIASES = {
     "학사": "학사", "공모전": "공모전",
     "행사": "행사", "취업": "취업", "경진대회": "공모전",
 }
+
 SORT_ALIASES = {"마감순":"마감순","최신순":"최신순","오래된순":"오래된순","오래순":"오래된순"}
 DEPT_ALL_TOKENS = {"전체","전부","전체학과","all"}
 _DEPT_SUFFIXES = ("학과","학부","전공","과","부")  # 접미사 제거용
@@ -89,26 +91,21 @@ def _resolve_sort(tok: str) -> str:
         if _norm(k) == t:
             return v
     return "최신순"
-# 사용자 입력 → DB 명칭으로 매핑
-RESTAURANT_CANON = {
+
+# 식당 명칭 정규화
+RESTAURANT_ALIASES = {
     "천지관": ["천지관", "학생식당"],
-    "백록관": ["크누테리아", "교직원식당", "백록관"]
+    "백록관": ["백록관"],
+    "크누테리아": ["크누테리아", "교직원식당"],
 }
 
 def _norm_restaurant(u: str) -> str:
     u = _norm(u)
-    for canon, aliases in RESTAURANT_CANON.items():
+    for canon, aliases in RESTAURANT_ALIASES.items():
         for a in aliases:
             if _norm(a) in u:
                 return canon
     return "천지관"
-
-# def _norm_restaurant(u: str) -> str:
-#     u = _norm(u)
-#     for rest_key in ("천지관", "크누테리아"):
-#         if any(_norm(alias) in u for alias in MENU_ALIASES[rest_key]):
-#             return rest_key
-#     return "천지관"
 
 def _norm_menu_period(u: str) -> str:
     u = _norm(u)
@@ -334,6 +331,33 @@ def parse_schedule_range(utterance: str, today: date):
     if "학사일정" in u: return None, None, "학사일정 전체"
     return None, None, ""
 
+# 🔗 학과 공지 게시판 URL 조회
+def fetch_department_homepage(dept_canon: str) -> str | None:
+    """학과명(대표 이름)으로 학과 공지 게시판 URL 조회."""
+    if not dept_canon:
+        return None
+
+    key = _norm_dept(dept_canon)  # '컴퓨터공학과' -> '컴퓨터공'
+    if not key:
+        return None
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT TOP 1 homepage_url
+            FROM dbo.department_notice_board
+            WHERE LOWER(
+                REPLACE(REPLACE(dept_name, ' ', ''), N'학과', '')
+            ) LIKE ?
+        """, f"%{key}%")
+        row = cur.fetchone()
+        cur.close()
+    finally:
+        conn.close()
+
+    return row[0] if row else None
+
 def fetch_academic_events(conn, start: date|None, end: date|None):
     cur = conn.cursor()
     if start and end:
@@ -411,7 +435,6 @@ def build_dept_filters(dept_canon: str):
 LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(d.department,' ',''),N'·',''),N'학과',''),N'학부',''),N'전공',''),N'과',''),N'부',''))
 """
 
-
     or_clauses = " OR ".join([f"{norm_sql} LIKE ?" for _ in like_list])
     sql_snippet = f"EXISTS (SELECT 1 FROM dbo.notice_department AS d WHERE d.notice_id = n.id AND ({or_clauses}))"
     return sql_snippet, tuple(like_list)
@@ -431,6 +454,75 @@ def message():
     utterance = get_utterance_from_payload(data)
     print("[HIT]", datetime.utcnow().isoformat(), "utterance=", repr(utterance), flush=True)
 
+    # ----- 사용법 / 도움말 처리 -----
+    norm_u = (utterance or "").strip()
+    norm_no_space = norm_u.replace(" ", "")
+
+    # if norm_u in ("사용법", "도움말") or "사용법" in norm_no_space:
+    #     help_text = (
+    #         "🎉 강원대 맞춤형 공지 챗봇 ‘크누리미’ 사용법 안내입니다.\n\n"
+    #         "1️⃣ 공지 검색\n"
+    #         " - 형식: 카테고리, 학과명\n"
+    #         "   예) 공모전, 컴퓨터공학과\n"
+    #         "   예) 장학, 경영학과\n"
+    #         "   예) 취업, 전체\n\n"
+    #         "2️⃣ 학사일정 조회\n"
+    #         "   예) 오늘 학사일정\n"
+    #         "   예) 내일 학사일정\n"
+    #         "   예) 11월 학사일정\n\n"
+    #         "3️⃣ 식단 조회\n"
+    #         "   예) 천지관 오늘 식단\n"
+    #         "   예) 백록관 금주의 식단\n"
+    #         "   예) 크누테리아 식단\n\n"
+    #         "원하는 내용을 그대로 입력해보세요! 😊"
+    #     )
+    #     return make_text_response(help_text)
+
+    # ✅ 사용법 전체 안내
+    if utterance and utterance.strip() in ("사용법", "도움말") :
+        text_notice = (
+            "📩 공지 사용법\n\n"
+            "📢 공지 확인하는 방법을 안내해드릴게요!\n\n"
+            "카테고리와 학과명을 공백으로 구분해 입력해주세요\n"
+            "예) 공모전 경영학과 / 장학 컴퓨터공학과 / 취업 전체\n\n"
+            "📌 학과명만 입력해도 최근 공지 5개를 안내해드려요!\n"
+            "예) 컴퓨터공학과 / 영어영문학과 / 경영학과\n\n"
+            "🔍 제공 정보\n"
+            "제목 / 요약 / 마감일 / 이미지 / 상세 링크\n\n"
+            "📚 지원 카테고리\n"
+            "비교과 / 학생지원 / 공모전 / 대외활동 / 취업 / 장학 / 일반 / 학사 / 금주식단 / 수강신청 / 취업연계\n"
+        )
+
+        text_schedule = (
+            "📅 학사일정 사용법\n\n"
+            "📌 학사일정 확인하는 방법을 안내드립니다!\n\n"
+            "확인하고 싶은 날짜를 입력해주세요.\n"
+            "예) 오늘학사일정 / 내일학사일정 / 11월학사일정 / 학사일정\n\n"
+            "📍 월 단위 조회 가능!\n"
+            "📍 '학사일정'만 입력하면 전체 학사일정 확인 가능!\n"
+        )
+
+        text_menu = (
+            "🍽 식단 사용법\n\n"
+            "😊 오늘 뭐 먹지? 식단 조회 방법 알려드릴게요!\n\n"
+            "원하는 날짜 + 식당명을 조합해서 입력해주세요.\n"
+            "예) 오늘식단 크누테리아 / 내일식단 천지관 / 금주의식단 백록관\n\n"
+            "📌 지원 식당\n"
+            "크누테리아 / 천지관 / 백록관\n\n"
+            "✅ 오늘 메뉴 / 내일 메뉴 / 이번 주 메뉴까지 확인 가능!\n"
+            "맛있는 하루 되세요! 🍱✨\n"
+        )
+
+        return jsonify({
+            "version": "2.0",
+            "template": {
+                "outputs": [
+                    {"simpleText": {"text": text_notice}},
+                    {"simpleText": {"text": text_schedule}},
+                    {"simpleText": {"text": text_menu}},
+                ]
+            }
+        })
     # --- 학사일정 ---
     if "학사일정" in utterance.replace(" ",""):
         today = datetime.today().date()
@@ -450,7 +542,7 @@ def message():
 
     # --- 식단 조회 ---
     u_norm = _norm(utterance)
-    has_menu_intent = ("식단" in u_norm) or any(a in u_norm for a in ["오늘","금주","이번주","주간","당일","오늘의","천지관","크누테리아"])
+    has_menu_intent = ("식단" in u_norm) or any(a in u_norm for a in ["오늘","금주","이번주","주간","당일","오늘의","천지관","크누테리아","백록관"])
     page_match = re.search(r'(?<!\w)p\s*:\s*(\d+)', utterance.lower())
     page = max(1, int(page_match.group(1))) if page_match else 1
 
@@ -561,7 +653,13 @@ WHERE {dept_filter_sql}
 
     display_dept = dept_raw or dept_canon
     if not rows:
-        return make_text_response(f"'{topic or '전체'}, {display_dept or '전체'}' 관련 공지가 없어요.")
+        fallback_text = (
+            "입력하신 내용을 이해하지 못했어요 😢\n"
+            "또는 해당 조건에 맞는 공지가 없어요.\n\n"
+            "사용법이 궁금하시면 ‘사용법’을 입력해보세요!"
+        )
+        return make_text_response(fallback_text)
+        #return make_text_response(f"'{topic or '전체'}, {display_dept or '전체'}' 관련 공지가 없어요.")
 
     cards = []
     for (notice_id, title, deadline, one_line, topic_val, created_at, link_url, file_url, departments) in rows[:5]:
@@ -577,7 +675,21 @@ WHERE {dept_filter_sql}
             "itemListAlignment": "left",
             "buttons": [{"action":"webLink","label":"자세히 보기","webLinkUrl": link_url}]
         })
+
+    # 기본 공지 카드(캐러셀 또는 단일 카드)
     outputs = [{"itemCard": cards[0]}] if len(cards)==1 else [{"carousel":{"type":"itemCard","items":cards}}]
+
+    # 🔗 학과 공지사항 전체 링크 simpleText 추가 (학과가 있는 경우에만)
+    if dept_canon:
+        dept_homepage = fetch_department_homepage(dept_canon)
+        if dept_homepage:
+            dept_label = display_dept or dept_canon
+            hint_text = (
+                f"🔗 '{dept_label}' 학과 공지사항 전체는 아래 링크에서 확인할 수 있어요.\n"
+                f"{dept_homepage}"
+            )
+            outputs.append({"simpleText": {"text": hint_text}})
+
     return jsonify({"version":"2.0", "template":{"outputs": outputs}})
 
 if __name__ == '__main__':
