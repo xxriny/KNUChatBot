@@ -54,14 +54,7 @@ def run_ingestion():
     logger.info("[INGEST] 후보 행 수=%s", len(df))
 
     max_processed = last_ts  # 이번 배치에서 처리된 최신 작성일
-
-    logger.info(
-    "[DEBUG] df_max_date=%s, last_ts=%s, df_has_newer=%s",
-    df["작성일"].max(),
-    last_ts,
-    df["작성일"].max() > last_ts
-)
-
+    
     # --- ingestion loop ---
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Ingestion 진행"):
             try:
@@ -148,9 +141,10 @@ def run_ingestion():
 
                 # 워터마크 갱신
                 if max_processed > last_ts:
-                    logger.info("[DEBUG] 워터마크 갱신")
+                    logger.info("[WATERMARK] 갱신됨: last_published_at=%s", max_processed)
                     with transaction(conn) as c:
                         update_last_published_at(c, max_processed)
+                    last_ts = max_processed
 
 
             except Exception as e:
